@@ -17,6 +17,8 @@ impl RealBackend {
 // Every extern below is verified against the macOS SDK at
 // /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include
 // (citations per item). Rule: one extern per OS call actually invoked.
+// NOTE: links System (libSystem) only — every extern used lives there; IOKit/CoreFoundation
+// links belong to M2h when the IOReport/IOHID paths land.
 #[link(name = "System", kind = "dylib")]
 extern "C" {
     // mach/mach_init.h:74 `extern mach_port_t mach_host_self(void);`

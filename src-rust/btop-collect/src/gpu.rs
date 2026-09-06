@@ -2,8 +2,7 @@
 //! mirroring sensors.cpp:93-96.
 
 /// Utilization: round(active*100/total), skipping IDLE/OFF/DOWN.
-/// Mirrors cpp:490-508. VERIFY the skipped state-name literals against cpp:490-495
-/// first — if C++ uses different literals, use those and report.
+/// Mirrors cpp:490-508. Literals verified against cpp:492.
 pub fn gpu_util(states: &[(String, u64)]) -> i64 {
     let mut active = 0u64;
     let mut total = 0u64;
