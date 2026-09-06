@@ -22,13 +22,11 @@ pub trait MacOsBackend {
     /// Returns (iface_name, ibytes, obytes) per interface.
     fn if_counters(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError>;
     fn proc_list(&mut self) -> Result<Vec<ProcRaw>, CollectError>;
-    /// AppleSi-only; Intel returns Unsupported. Returns (name, residency, freq_hz).
-    /// AppleSi-only; Intel returns Unsupported.
-    /// Returns (name, residency, freq_hz).
+    /// AppleSi-only. Degrades to Ok(empty) until M2h implements the IOReport/IOHID path (spec S2: optional subsystems never Err).
     fn gpu_residency(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError>;
-    /// Returns (raw_value, unit). AppleSi-only; Intel returns Unsupported.
+    /// AppleSi-only. Degrades to Ok(empty) until M2h implements the IOReport/IOHID path (spec S2: optional subsystems never Err).
     fn gpu_energy(&mut self) -> Result<(u64, EnergyUnit), CollectError>;
-    /// Returns Celsius readings. AppleSi-only; Intel returns Unsupported.
+    /// AppleSi-only. Degrades to Ok(empty) until M2h implements the IOReport/IOHID path (spec S2: optional subsystems never Err).
     fn hid_temps(&mut self) -> Result<Vec<f64>, CollectError>;
 }
 
