@@ -41,6 +41,54 @@ pub fn str_to_upper(s: &str) -> String {
     s.to_ascii_uppercase()
 }
 
+fn char_len(s: &str) -> usize {
+    s.chars().count()
+}
+
+/// Pad/truncate to width `x`. `limit=true` truncates overlong input.
+/// Byte-based variant of Tools::ljust/rjust with utf=true, wide=false.
+pub fn ljust(s: &str, x: usize, limit: bool) -> String {
+    let len = char_len(s);
+    if limit && len > x {
+        return s.chars().take(x).collect();
+    }
+    let mut out = s.to_string();
+    out.extend(std::iter::repeat(' ').take(x.saturating_sub(len)));
+    out
+}
+
+/// Right-aligned variant of [`ljust`].
+pub fn rjust(s: &str, x: usize, limit: bool) -> String {
+    let len = char_len(s);
+    if limit && len > x {
+        return s.chars().take(x).collect();
+    }
+    let mut out = " ".repeat(x.saturating_sub(len));
+    out.push_str(s);
+    out
+}
+
+/// Format seconds as `[Nd ]HH:MM[:SS]`. Mirrors Tools::sec_to_dhms
+/// (src/btop_tools.cpp:408): days prefix only when `!no_days && days > 0`,
+/// always zero-padded HH and MM, `:SS` unless `no_seconds`.
+pub fn sec_to_dhms(seconds: u64, no_days: bool, no_seconds: bool) -> String {
+    let days = seconds / 86400;
+    let rem = seconds % 86400;
+    let hours = rem / 3600;
+    let rem = rem % 3600;
+    let minutes = rem / 60;
+    let secs = rem % 60;
+    let mut out = String::new();
+    if !no_days && days > 0 {
+        out.push_str(&format!("{days}d "));
+    }
+    out.push_str(&format!("{hours:02}:{minutes:02}"));
+    if !no_seconds {
+        out.push_str(&format!(":{secs:02}"));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +144,23 @@ mod tests {
     #[test]
     fn uppercases_ascii() {
         assert_eq!(str_to_upper("MiB/s"), "MIB/S");
+    }
+
+    #[test]
+    fn justifies_and_limits() {
+        assert_eq!(ljust("ab", 5, false), "ab   ");
+        assert_eq!(rjust("ab", 5, false), "   ab");
+        assert_eq!(ljust("abcdef", 4, true), "abcd");
+        assert_eq!(rjust("abcdef", 4, true), "abcd");
+        assert_eq!(ljust("ab", 5, true), "ab   ");
+    }
+
+    #[test]
+    fn formats_dhms() {
+        assert_eq!(sec_to_dhms(3661, false, false), "01:01:01");
+        assert_eq!(sec_to_dhms(90061, false, false), "1d 01:01:01");
+        assert_eq!(sec_to_dhms(90061, false, true), "1d 01:01");
+        assert_eq!(sec_to_dhms(90061, true, false), "01:01:01");
+        assert_eq!(sec_to_dhms(59, false, false), "00:00:59");
     }
 }
