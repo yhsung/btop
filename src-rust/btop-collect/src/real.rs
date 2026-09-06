@@ -17,8 +17,8 @@ impl RealBackend {
 // Every extern below is verified against the macOS SDK at
 // /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include
 // (citations per item). Rule: one extern per OS call actually invoked.
-// NOTE: links System (libSystem) only — every extern used lives there; IOKit/CoreFoundation
-// links belong to M2h when the IOReport/IOHID paths land.
+// NOTE: links System (libSystem) for the Mach/sysctl/proc paths above;
+// CoreFoundation + IOKit links below belong to the M2h IOHID thermal path.
 #[link(name = "System", kind = "dylib")]
 extern "C" {
     // mach/mach_init.h:74 `extern mach_port_t mach_host_self(void);`
@@ -60,6 +60,123 @@ extern "C" {
     fn statvfs(path: *const u8, buf: *mut u8) -> i32;
 }
 
+// ---- M2h(a): IOHID thermal via CoreFoundation/IOKit (mirrors sensors.cpp) ----
+use std::ffi::c_void;
+use std::os::raw::c_char;
+
+/// Minimal CF ownership guard mirroring C++ CFRef (btop_collect.cpp:129-149).
+pub struct Cf(*const c_void);
+// SAFETY: Cf owns one +1 retain; never shared across threads (all use is local).
+unsafe impl Send for Cf {}
+impl Drop for Cf {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { CFRelease(self.0) }
+        }
+    }
+}
+impl Cf {
+    pub fn new(p: *const c_void) -> Option<Self> {
+        if p.is_null() {
+            None
+        } else {
+            Some(Self(p))
+        }
+    }
+    pub fn get(&self) -> *const c_void {
+        self.0
+    }
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    // CoreFoundation/CFBase.h:781 `void CFRelease(CFTypeRef cf);`
+    fn CFRelease(cf: *const c_void);
+    // CoreFoundation/CFArray.h:279 `CFIndex CFArrayGetCount(CFArrayRef theArray);`
+    fn CFArrayGetCount(arr: *const c_void) -> isize;
+    // CoreFoundation/CFArray.h:339 `const void *CFArrayGetValueAtIndex(CFArrayRef, CFIndex);`
+    fn CFArrayGetValueAtIndex(arr: *const c_void, idx: isize) -> *const c_void;
+    // CoreFoundation/CFString.h:181
+    // `CFStringRef CFStringCreateWithCString(CFAllocatorRef, const char *, CFStringEncoding);`
+    fn CFStringCreateWithCString(
+        alloc: *const c_void,
+        cstr: *const c_char,
+        encoding: u32,
+    ) -> *const c_void;
+    // CoreFoundation/CFString.h:294
+    // `Boolean CFStringGetCString(CFStringRef, char *, CFIndex, CFStringEncoding);`
+    fn CFStringGetCString(s: *const c_void, buf: *mut c_char, bufsize: isize, encoding: u32) -> u8;
+    // CoreFoundation/CFNumber.h:74
+    // `CFNumberRef CFNumberCreate(CFAllocatorRef, CFNumberType, const void *);`
+    fn CFNumberCreate(alloc: *const c_void, numtype: isize, value: *const c_void) -> *const c_void;
+    // CoreFoundation/CFDictionary.h:284
+    // `CFDictionaryRef CFDictionaryCreate(CFAllocatorRef, const void **, const void **,
+    // CFIndex, const CFDictionaryKeyCallBacks *, const CFDictionaryValueCallBacks *);`
+    fn CFDictionaryCreate(
+        alloc: *const c_void,
+        keys: *const *const c_void,
+        values: *const *const c_void,
+        count: isize,
+        key_cb: *const c_void,
+        val_cb: *const c_void,
+    ) -> *const c_void;
+}
+
+#[link(name = "IOKit", kind = "framework")]
+extern "C" {
+    // IOKit private SPI: absent from the public IOHIDEventSystemClient.h (which only
+    // declares CreateSimpleClient); decls mirror sensors.cpp:45-50 and
+    // btop_collect.cpp:108-113. Symbols verified present in IOKit.tbd:
+    // _IOHIDEventSystemClientCreate, _IOHIDEventSystemClientSetMatching,
+    // _IOHIDEventSystemClientCopyServices.
+    fn IOHIDEventSystemClientCreate(allocator: *const c_void) -> *mut c_void;
+    fn IOHIDEventSystemClientSetMatching(client: *mut c_void, matching: *const c_void) -> i32;
+    // IOKit/hidsystem/IOHIDEventSystemClient.h:112
+    // `CFArrayRef IOHIDEventSystemClientCopyServices(IOHIDEventSystemClientRef);`
+    fn IOHIDEventSystemClientCopyServices(client: *mut c_void) -> *const c_void;
+    // IOKit/hidsystem/IOHIDServiceClient.h
+    // `CFTypeRef IOHIDServiceClientCopyProperty(IOHIDServiceClientRef, CFStringRef);`
+    // tbd: _IOHIDServiceClientCopyProperty.
+    fn IOHIDServiceClientCopyProperty(
+        service: *const c_void,
+        property: *const c_void,
+    ) -> *const c_void;
+    // tbd: _IOHIDServiceClientCopyEvent.
+    fn IOHIDServiceClientCopyEvent(
+        service: *const c_void,
+        event_type: i64,
+        arg1: i32,
+        arg2: i64,
+    ) -> *const c_void;
+    // tbd: _IOHIDEventGetFloatValue.
+    fn IOHIDEventGetFloatValue(event: *const c_void, field: i32) -> f64;
+}
+
+// CoreFoundation/CFDictionary.h:118,169
+// `const CFDictionaryKeyCallBacks kCFTypeDictionaryKeyCallBacks;` (+ Value variant).
+// Typed opaque: only the address is passed to CFDictionaryCreate.
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    static kCFTypeDictionaryKeyCallBacks: u8;
+    static kCFTypeDictionaryValueCallBacks: u8;
+}
+
+// Hardcoded constants with citations:
+// kCFNumberSInt32Type=3 (CoreFoundation/CFNumber.h:35).
+const K_CF_NUMBER_SINT32: isize = 3;
+// kCFStringEncodingUTF8=0x08000100 (CoreFoundation/CFString.h:113),
+// kCFStringEncodingASCII=0x0600 (CoreFoundation/CFString.h:111).
+const K_CF_STR_UTF8: u32 = 0x0800_0100;
+const K_CF_STR_ASCII: u32 = 0x0600;
+// kIOHIDEventTypeTemperature=15 (sensors.cpp:43, btop_collect.cpp:351; private SPI,
+// no public IOHIDEvent.h header); field = 15<<16 (sensors.cpp:42,72).
+const HID_EVENT_TYPE_TEMPERATURE: i64 = 15;
+const HID_EVENT_FIELD_TEMPERATURE: i32 = 15 << 16;
+// Apple-vendor thermal usage (sensors.cpp:105 `matching(0xff00, 5)`,
+// btop_collect.cpp:349-350).
+const HID_PAGE_APPLE_VENDOR: i32 = 0xff00;
+const HID_USAGE_TEMPERATURE_SENSOR: i32 = 5;
+
 // ---- C-measured ABI constants (see /tmp/sizes.c output in task report) ----
 const PROCESSOR_CPU_LOAD_INFO: i32 = 2; // mach/processor_info.h:94
 const HOST_VM_INFO64: i32 = 4; // mach/host_info.h:182
@@ -95,6 +212,219 @@ fn basename_of(path: &[u8]) -> String {
     match s.rfind('/') {
         Some(i) => s[i + 1..].to_string(),
         None => s.to_string(),
+    }
+}
+
+// Mirrors sensors.cpp:81-91. Returns -1 when the prefix is missing or no
+// ASCII digit follows it; reads the leading digit run otherwise.
+// (saturating arithmetic: Digit runs are tiny in practice; C++ would UB-overflow.)
+pub(crate) fn parse_sensor_index(name: &str, prefix: &str) -> i32 {
+    let rest = match name.strip_prefix(prefix) {
+        Some(r) => r,
+        None => return -1,
+    };
+    if !rest.starts_with(|c: char| c.is_ascii_digit()) {
+        return -1;
+    }
+    let mut value: i32 = 0;
+    for c in rest.chars().take_while(|c| c.is_ascii_digit()) {
+        value = value
+            .saturating_mul(10)
+            .saturating_add((c as u8 - b'0') as i32);
+    }
+    value
+}
+
+/// GPU-sensor predicate. Mirrors btop_collect.cpp:382-384 (contains "GPU",
+/// or starts with "PMU TP" AND ends with 'g').
+pub(crate) fn is_gpu_sensor(name: &str) -> bool {
+    name.contains("GPU") || (name.starts_with("PMU TP") && name.ends_with('g'))
+}
+
+/// Package bucket selection over (Product, temp) entries.
+/// Mirrors sensors.cpp:133-142 + sensors.cpp:177-178 (acc else tdie else soc mean
+/// via sensor_avg; None when the winning bucket is empty).
+pub(crate) fn select_package_temp(entries: &[(String, f64)]) -> Option<i64> {
+    let mut acc = Vec::new();
+    let mut tdie = Vec::new();
+    let mut soc = Vec::new();
+    for (name, temp) in entries {
+        if name.starts_with("eACC") || name.starts_with("pACC") {
+            acc.push(*temp);
+        } else if name.starts_with("PMU tdie") {
+            tdie.push(*temp);
+        } else if name.starts_with("SOC MTR Temp Sensor") {
+            soc.push(*temp);
+        }
+    }
+    let temps = if !acc.is_empty() {
+        acc
+    } else if !tdie.is_empty() {
+        tdie
+    } else {
+        soc
+    };
+    if temps.is_empty() {
+        None
+    } else {
+        Some(crate::gpu::sensor_avg(&temps))
+    }
+}
+
+/// Core selection over (Product, temp) entries. Mirrors sensors.cpp:152-175:
+/// tdie indexed (sorted by index) else acc named (sorted by name), avg>0 only.
+pub(crate) fn select_core_temps(entries: &[(String, f64)]) -> Vec<i64> {
+    use std::collections::BTreeMap;
+    let mut tdie: BTreeMap<i32, Vec<f64>> = BTreeMap::new();
+    let mut acc: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
+    for (name, temp) in entries {
+        if name.starts_with("PMU tdie") {
+            let idx = parse_sensor_index(name, "PMU tdie");
+            if idx >= 0 {
+                tdie.entry(idx).or_default().push(*temp);
+            }
+        } else if name.starts_with("eACC") || name.starts_with("pACC") {
+            acc.entry(name.as_str()).or_default().push(*temp);
+        }
+    }
+    let mut out = Vec::new();
+    if !tdie.is_empty() {
+        for temps in tdie.values() {
+            let avg = crate::gpu::sensor_avg(temps);
+            if avg > 0 {
+                out.push(avg);
+            }
+        }
+    } else if !acc.is_empty() {
+        for temps in acc.values() {
+            let avg = crate::gpu::sensor_avg(temps);
+            if avg > 0 {
+                out.push(avg);
+            }
+        }
+    }
+    out
+}
+
+impl RealBackend {
+    /// Enumerate thermal services (0xff00,5) → (Product name, temp).
+    /// Mirrors sensors.cpp:104-151. Keeps only 0 < temp < 150 (cpp:132).
+    /// Never Err — failure yields empty vec.
+    fn hid_thermal_sensors(&mut self) -> Vec<(String, f64)> {
+        let mut out = Vec::new();
+        // SAFETY: every unsafe block below performs a single FFI call whose
+        // return is null-checked (via Cf::new) before any use; opaque handles
+        // are *mut c_void (simpler than struct decls; same address semantics).
+        unsafe {
+            let alloc: *const c_void = std::ptr::null();
+            let page_key = match Cf::new(CFStringCreateWithCString(
+                alloc,
+                c"PrimaryUsagePage".as_ptr(),
+                K_CF_STR_UTF8,
+            )) {
+                Some(k) => k,
+                None => return out,
+            };
+            let usage_key = match Cf::new(CFStringCreateWithCString(
+                alloc,
+                c"PrimaryUsage".as_ptr(),
+                K_CF_STR_UTF8,
+            )) {
+                Some(k) => k,
+                None => return out,
+            };
+            let product_key = match Cf::new(CFStringCreateWithCString(
+                alloc,
+                c"Product".as_ptr(),
+                K_CF_STR_UTF8,
+            )) {
+                Some(k) => k,
+                None => return out,
+            };
+            let page = HID_PAGE_APPLE_VENDOR;
+            let usage = HID_USAGE_TEMPERATURE_SENSOR;
+            let num_page = match Cf::new(CFNumberCreate(
+                alloc,
+                K_CF_NUMBER_SINT32,
+                &page as *const i32 as *const c_void,
+            )) {
+                Some(n) => n,
+                None => return out,
+            };
+            let num_usage = match Cf::new(CFNumberCreate(
+                alloc,
+                K_CF_NUMBER_SINT32,
+                &usage as *const i32 as *const c_void,
+            )) {
+                Some(n) => n,
+                None => return out,
+            };
+            // Matching dict built exactly like sensors.cpp:53-66.
+            let keys = [page_key.get(), usage_key.get()];
+            let values = [num_page.get(), num_usage.get()];
+            let matching = match Cf::new(CFDictionaryCreate(
+                alloc,
+                keys.as_ptr(),
+                values.as_ptr(),
+                2,
+                std::ptr::addr_of!(kCFTypeDictionaryKeyCallBacks) as *const c_void,
+                std::ptr::addr_of!(kCFTypeDictionaryValueCallBacks) as *const c_void,
+            )) {
+                Some(d) => d,
+                None => return out,
+            };
+            let client = match Cf::new(IOHIDEventSystemClientCreate(alloc) as *const c_void) {
+                Some(c) => c,
+                None => return out,
+            };
+            IOHIDEventSystemClientSetMatching(client.get() as *mut c_void, matching.get());
+            let services = match Cf::new(IOHIDEventSystemClientCopyServices(
+                client.get() as *mut c_void
+            )) {
+                Some(s) => s,
+                None => return out,
+            };
+            let count = CFArrayGetCount(services.get());
+            let mut buf = [0 as c_char; 200];
+            for i in 0..count {
+                // Borrowed (array-owned) — never wrapped in Cf, never released (cpp:119).
+                let sc = CFArrayGetValueAtIndex(services.get(), i);
+                if sc.is_null() {
+                    continue;
+                }
+                let name = match Cf::new(IOHIDServiceClientCopyProperty(sc, product_key.get())) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                // C++ uses kCFStringEncodingASCII here (sensors.cpp:124).
+                if CFStringGetCString(
+                    name.get(),
+                    buf.as_mut_ptr(),
+                    buf.len() as isize,
+                    K_CF_STR_ASCII,
+                ) == 0
+                {
+                    continue;
+                }
+                let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+                let bytes: Vec<u8> = buf[..len].iter().map(|&c| c as u8).collect();
+                let product = String::from_utf8_lossy(&bytes).into_owned();
+                let event = match Cf::new(IOHIDServiceClientCopyEvent(
+                    sc,
+                    HID_EVENT_TYPE_TEMPERATURE,
+                    0,
+                    0,
+                )) {
+                    Some(e) => e,
+                    None => continue,
+                };
+                let temp = IOHIDEventGetFloatValue(event.get(), HID_EVENT_FIELD_TEMPERATURE);
+                if temp > 0.0 && temp < 150.0 {
+                    out.push((product, temp));
+                }
+            }
+        }
+        out
     }
 }
 
@@ -204,14 +534,16 @@ impl MacOsBackend for RealBackend {
         Ok(avg)
     }
 
-    // TODO(M2h): IOHID thermal path. Degrade per spec S2 (never Err).
+    // C++ sensors.cpp:104-178 via hid_thermal_sensors; degrades to Ok(None)
+    // when no bucket matches (never Err per spec S2).
     fn package_temp(&mut self) -> Result<Option<i64>, CollectError> {
-        Ok(None)
+        Ok(select_package_temp(&self.hid_thermal_sensors()))
     }
 
-    // TODO(M2h): IOHID thermal path. Degrade per spec S2 (never Err).
+    // C++ sensors.cpp:152-175 via hid_thermal_sensors; empty when no tdie/acc
+    // sensors exist (never Err per spec S2).
     fn core_temps(&mut self) -> Result<Vec<i64>, CollectError> {
-        Ok(vec![])
+        Ok(select_core_temps(&self.hid_thermal_sensors()))
     }
 
     // C++ cpp:1251-1258: host_statistics64(HOST_VM_INFO64); pageSize via
@@ -328,9 +660,16 @@ impl MacOsBackend for RealBackend {
         Ok((0, EnergyUnit::Nano))
     }
 
-    // TODO(M2h): IOHID GPU thermal path. AppleSi-only; Intel → Unsupported.
+    // C++ btop_collect.cpp:346-402 get_gpu_temp_iohid: GPU-matching sensor
+    // raw f64s (0<t<150 already filtered by the helper). Possibly empty on
+    // machines without GPU thermal services — never Err per spec S2.
     fn hid_temps(&mut self) -> Result<Vec<f64>, CollectError> {
-        Ok(vec![])
+        Ok(self
+            .hid_thermal_sensors()
+            .into_iter()
+            .filter(|(name, _)| is_gpu_sensor(name))
+            .map(|(_, temp)| temp)
+            .collect())
     }
 }
 
@@ -371,5 +710,64 @@ mod tests {
     fn basename_strips_dirs_and_nuls() {
         assert_eq!(basename_of(b"/usr/local/bin/btop\0\0"), "btop");
         assert_eq!(basename_of(b"launchd"), "launchd");
+    }
+
+    // M2h(a) TDD red: select_core_temps does not exist yet.
+    fn entries(pairs: &[(&str, f64)]) -> Vec<(String, f64)> {
+        pairs.iter().map(|(n, t)| (n.to_string(), *t)).collect()
+    }
+
+    #[test]
+    fn core_temps_prefers_tdie_sorted_by_index() {
+        // Synthetic M2 Max-like names: tdie9 before tdie2 in enumeration,
+        // output must be index-sorted [idx2, idx9].
+        let e = entries(&[("PMU tdie9", 50.0), ("PMU tdie2", 60.0)]);
+        assert_eq!(select_core_temps(&e), vec![60, 50]);
+    }
+
+    #[test]
+    fn core_temps_falls_back_to_acc_sorted_by_name() {
+        let e = entries(&[
+            ("pACC MTR Temp Sensor0", 55.0),
+            ("eACC MTR Temp Sensor0", 45.0),
+        ]);
+        assert_eq!(select_core_temps(&e), vec![45, 55]);
+    }
+
+    #[test]
+    fn core_temps_ignores_non_indexed_tdie_and_soc() {
+        // "PMU tdie" without trailing digits: no index → excluded from cores.
+        // SOC entries never feed core_temps (sensors.cpp:153-164).
+        let e = entries(&[
+            ("PMU tdie", 70.0),
+            ("SOC MTR Temp Sensor0", 65.0),
+            ("PMU tdev1", 40.0),
+        ]);
+        assert!(select_core_temps(&e).is_empty());
+    }
+
+    #[test]
+    fn package_prefers_acc_over_tdie_over_soc() {
+        let e = entries(&[
+            ("SOC MTR Temp Sensor0", 60.0),
+            ("PMU tdie2", 70.0),
+            ("pACC MTR Temp Sensor0", 50.0),
+        ]);
+        assert_eq!(select_package_temp(&e), Some(50));
+        let e = entries(&[("SOC MTR Temp Sensor0", 60.0), ("PMU tdie2", 70.0)]);
+        assert_eq!(select_package_temp(&e), Some(70));
+        let e = entries(&[("SOC MTR Temp Sensor0", 60.4)]);
+        assert_eq!(select_package_temp(&e), Some(60));
+        assert_eq!(select_package_temp(&[]), None);
+    }
+
+    #[test]
+    fn gpu_sensor_matches_cpp_predicate() {
+        // btop_collect.cpp:382-384: contains "GPU", or PMU TP* ending in 'g'.
+        assert!(is_gpu_sensor("GPU MTR Temp Sensor0"));
+        assert!(is_gpu_sensor("PMU TPxg"));
+        assert!(!is_gpu_sensor("PMU TPxh"));
+        assert!(!is_gpu_sensor("PMU tdie3"));
+        assert!(!is_gpu_sensor(""));
     }
 }
