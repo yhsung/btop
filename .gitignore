@@ -91,3 +91,5 @@ cmake-build-*
 
 # superpowers worktrees
 /.worktrees/
+
+/src-rust/target/
