@@ -865,6 +865,9 @@ fn gpu_channels() -> Option<Cf> {
 /// Create the IOReport subscription over the merged channels (cpp:312-319).
 /// Cf-wrapped: C++ releases ior_sub via CFRelease at cpp:341.
 fn gpu_subscribe(chan: &Cf) -> Option<Cf> {
+    // NOTE: sub_dict out-param intentionally unowned (mirrors C++, which never
+    // releases it either — cpp:312-319, shutdown at :337-344 frees only
+    // prev_sample/ior_chan/ior_sub). Bounded one-time cost per process lifetime.
     let mut sub_dict: *mut c_void = std::ptr::null_mut();
     // SAFETY: single FFI call; null-checked via Cf::new.
     Cf::new(unsafe {
