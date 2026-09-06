@@ -13,7 +13,14 @@ pub fn parse_theme(path: &Path) -> HashMap<String, String> {
         if let Some(rest) = line.strip_prefix("theme[") {
             if let Some((key, value)) = rest.split_once(']') {
                 if let Some(hex) = value.strip_prefix('=') {
-                    map.insert(key.to_string(), hex.trim().to_string());
+                    let v = hex.trim();
+                    // Mirror C++ loadFile (btop_theme.cpp:414-418): a leading
+                    // `"` starts a quoted value read until the next `"`.
+                    let v = match v.strip_prefix('"') {
+                        Some(rest) => rest.split_once('"').map(|(inner, _)| inner).unwrap_or(rest),
+                        None => v,
+                    };
+                    map.insert(key.to_string(), v.to_string());
                 }
             }
         }
@@ -55,7 +62,7 @@ pub fn hex_to_color(hex: &str, to_256: bool, depth: &str) -> String {
     if h.is_empty() || !h.bytes().all(|c| c.is_ascii_hexdigit()) {
         return String::new();
     }
-    let layer = if depth == "bg" { 48 } else { 38 };
+    let layer = if depth == "fg" { 38 } else { 48 };
     match h.len() {
         2 => {
             let n = hex_pair(h);
@@ -78,7 +85,7 @@ pub fn hex_to_color(hex: &str, to_256: bool, depth: &str) -> String {
 /// Note: C++ clamps inputs to 0–255; no-op here by construction since the
 /// signature takes `u8` (already in range).
 pub fn dec_to_color(r: u8, g: u8, b: u8, to_256: bool, depth: &str) -> String {
-    let layer = if depth == "bg" { 48 } else { 38 };
+    let layer = if depth == "fg" { 38 } else { 48 };
     if to_256 {
         let n = truecolor_to_256(r, g, b);
         format!("\x1b[{layer};5;{n}m")
