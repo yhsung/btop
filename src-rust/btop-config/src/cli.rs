@@ -78,7 +78,7 @@ fn next_value(
 fn stoi_prefix(s: &str) -> Result<i32, ()> {
     let b = s.as_bytes();
     let mut i = 0;
-    while i < b.len() && b[i] == b' ' {
+    while i < b.len() && b[i].is_ascii_whitespace() {
         i += 1;
     }
     let mut neg = false;
@@ -89,7 +89,10 @@ fn stoi_prefix(s: &str) -> Result<i32, ()> {
     let start = i;
     let mut acc: i64 = 0;
     while i < b.len() && b[i].is_ascii_digit() {
-        acc = acc * 10 + (b[i] - b'0') as i64;
+        acc = acc
+            .checked_mul(10)
+            .and_then(|a| a.checked_add((b[i] - b'0') as i64))
+            .ok_or(())?;
         i += 1;
     }
     if i == start {
@@ -174,5 +177,12 @@ mod tests {
         assert!(parse(&args(&["-p", "abc"])).is_err());
         assert_eq!(parse(&args(&["-u", "50"])).unwrap().updates, Some(100));
         assert_eq!(parse(&args(&["-u", "500"])).unwrap().updates, Some(500));
+    }
+
+    #[test]
+    fn stoi_rejects_overflow_and_weird_spacing() {
+        assert!(parse(&args(&["-p", "9999999999999999999999999"])).is_err());
+        assert_eq!(parse(&args(&["-p", "\t5"])).unwrap().preset, Some(5));
+        assert!(parse(&args(&["--bogus"])).is_err());
     }
 }
