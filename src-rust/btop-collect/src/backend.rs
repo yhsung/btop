@@ -13,16 +13,25 @@ pub trait MacOsBackend {
     fn load_avg(&mut self) -> Result<[f64; 3], CollectError>;
     fn package_temp(&mut self) -> Result<Option<i64>, CollectError>;
     fn core_temps(&mut self) -> Result<Vec<i64>, CollectError>;
+    fn vm_raw(&mut self) -> Result<(u64, u64, u64, u64, u64), CollectError>;
+    fn swap_raw(&mut self) -> Result<(u64, u64, u64), CollectError>;
+    fn disk_raw(&mut self, mount: &str) -> Result<(u64, u64, u64), CollectError>;
 }
 
-/// Deterministic replay source for tests. Fields are FIFO queues draining in call
-/// order; unneeded methods return `Unsupported` until their task fills them.
+/// Deterministic replay source for tests. Queues drain FIFO in call order.
+/// Empty-queue fallback per method: `cpu_ticks` → `Err(Unsupported)`,
+/// `load_avg` → `Ok([0,0,0])`, `package_temp` → `Ok(None)`, `core_temps` → `Ok(vec![])`,
+/// `vm_raw` → `Err(Unsupported)`, `swap_raw` → `Ok((0,0,0))`, `disk_raw` → `Ok((0,0,0))`.
+/// Tasks 4–6 append their methods here with the same documented fallback.
 #[derive(Debug, Default)]
 pub struct ReplayBackend {
     pub cpu_ticks_q: VecDeque<CpuTicks>,
     pub load_avg_q: VecDeque<[f64; 3]>,
     pub package_temp_q: VecDeque<Option<i64>>,
     pub core_temps_q: VecDeque<Vec<i64>>,
+    pub vm_raw_q: VecDeque<(u64, u64, u64, u64, u64)>,
+    pub swap_raw_q: VecDeque<(u64, u64, u64)>,
+    pub disk_raw_q: VecDeque<(u64, u64, u64)>,
 }
 
 impl MacOsBackend for ReplayBackend {
@@ -39,6 +48,17 @@ impl MacOsBackend for ReplayBackend {
     }
     fn core_temps(&mut self) -> Result<Vec<i64>, CollectError> {
         Ok(self.core_temps_q.pop_front().unwrap_or_default())
+    }
+    fn vm_raw(&mut self) -> Result<(u64, u64, u64, u64, u64), CollectError> {
+        self.vm_raw_q
+            .pop_front()
+            .ok_or(CollectError::Unsupported("vm_raw queue empty"))
+    }
+    fn swap_raw(&mut self) -> Result<(u64, u64, u64), CollectError> {
+        Ok(self.swap_raw_q.pop_front().unwrap_or((0, 0, 0)))
+    }
+    fn disk_raw(&mut self, _mount: &str) -> Result<(u64, u64, u64), CollectError> {
+        Ok(self.disk_raw_q.pop_front().unwrap_or((0, 0, 0)))
     }
 }
 
