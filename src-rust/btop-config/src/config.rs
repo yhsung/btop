@@ -1,5 +1,6 @@
 //! Config maps mirroring Config:: in src/btop_config.hpp:37-42.
 use std::collections::HashMap;
+use std::path::Path;
 
 #[derive(Debug, Default)]
 pub struct Config {
@@ -92,6 +93,51 @@ impl Config {
         for (k, v) in std::mem::take(&mut self.bools_tmp) {
             self.bools.insert(k, v);
         }
+    }
+
+    /// Load `key="value"` lines. Returns one warning string per unknown or
+    /// malformed line. Mirrors Config::load dispatch (src/btop_config.cpp:799-830).
+    pub fn load(&mut self, path: &Path) -> Vec<String> {
+        let mut warnings = Vec::new();
+        let Ok(text) = std::fs::read_to_string(path) else {
+            warnings.push(format!("cannot read {}", path.display()));
+            return warnings;
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((name, mut value)) = line.split_once('=') else {
+                warnings.push(format!("malformed line: {line}"));
+                continue;
+            };
+            let name = name.trim();
+            value = value.trim().trim_matches('"');
+            if self.bools.contains_key(name) {
+                match value.to_ascii_lowercase().as_str() {
+                    "true" => {
+                        self.set_b(name, true);
+                    }
+                    "false" => {
+                        self.set_b(name, false);
+                    }
+                    _ => warnings.push(format!("invalid bool {name}={value}")),
+                }
+            } else if self.ints.contains_key(name) {
+                match value.parse::<i64>() {
+                    Ok(v) => {
+                        self.set_i(name, v);
+                    }
+                    Err(_) => warnings.push(format!("invalid int {name}={value}")),
+                }
+            } else if self.strings.contains_key(name) {
+                self.set_s(name, value.to_string());
+            } else {
+                warnings.push(format!("unknown key: {name}"));
+            }
+        }
+        warnings
     }
 }
 
