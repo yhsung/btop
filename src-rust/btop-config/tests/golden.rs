@@ -1,4 +1,5 @@
 use btop_config::config::Config;
+use btop_config::theme::{dec_to_color, hex_to_color, parse_theme};
 use std::path::PathBuf;
 
 fn fixture(name: &str) -> PathBuf {
@@ -35,4 +36,13 @@ fn load_invalid_conf_warns() {
     assert!(warnings[1].contains("theme_background"));
     assert!(warnings[2].contains("update_ms"));
     assert!(warnings[3].contains("unknown_thing"));
+}
+
+#[test]
+fn theme_golden() {
+    let map = parse_theme(&fixture("sample.theme"));
+    assert_eq!(map.get("main_bg").map(String::as_str), Some("#1e1e2e"));
+    assert_eq!(hex_to_color("#cdd6f4", false, "fg"), "\x1b[38;2;205;214;244m");
+    assert_eq!(dec_to_color(205, 214, 244, false, "bg"), "\x1b[48;2;205;214;244m");
+    assert_eq!(hex_to_color("#cdd6f4", true, "fg"), "\x1b[38;5;188m");
 }
