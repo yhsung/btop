@@ -3,16 +3,15 @@
 //! Pattern mirrors btop-config/tests/golden.rs: fixtures live in
 //! `../fixtures/draw/` via `CARGO_MANIFEST_DIR`.
 //!
-//! Byte-parity vs `meter_50.ans` / `graph_default.ans` / `graph_tty.ans` is
-//! DEFERRED to Task 3: those blobs embody Default-theme gradients
-//! (101-step interpolations built by `Theme::updateTheme()` in
-//! btop_theme.cpp:305-363), and gradient construction from theme files is
-//! Task 3's scope. Here, tests build 101-slot marker gradients
-//! (`G000`-`G100`) and assert EXACT full-string equality — proving the
-//! structure and color-index mapping. The `draw_fixtures_present` test pins
-//! the fixture files this task's successors must byte-match.
+//! The marker-gradient tests below prove structure and color-index
+//! mapping with EXACT full-string equality. The `byte_parity_*` tests at
+//! the end (Task 3) build TRUE Default gradients via
+//! [`btop_draw::theme_grad`] and assert BYTE equality against the C++
+//! harness fixtures (`meter_50.ans` / `graph_default.ans` /
+//! `graph_tty.ans`).
 
 use btop_draw::meter_graph::{meter, Graph, GraphOpts};
+use btop_draw::theme_grad::{color, default_theme, gradient};
 use std::path::PathBuf;
 
 fn fixture_dir() -> PathBuf {
@@ -151,10 +150,75 @@ fn graph_push_appends_one_cell() {
 
 #[test]
 fn draw_fixtures_present() {
-    // Task 3 byte-parity targets (see module docs for the deferral reason).
+    // Byte-parity targets for the tests below.
     for name in ["meter_50.ans", "graph_default.ans", "graph_tty.ans"] {
         let path = fixture_dir().join(name);
         assert!(path.exists(), "missing fixture: {}", path.display());
         assert!(!std::fs::read(&path).unwrap().is_empty());
     }
+}
+
+// ── Task 3 byte parity ────────────────────────────────────────────────────
+// The harness (tests/draw_golden.cpp:296-300) runs headless with Config
+// defaults: color_theme="Default", tty_mode=false, lowcolor=false,
+// theme_background=true, graph_symbol="braille". So:
+// - gradient = theme_grad::gradient("cpu", &default_theme(), false),
+// - meter_bg = Theme::c("meter_bg"), reset = Fx::reset
+//   = reset_base + main_fg + main_bg,
+// - Graph symbol "default" resolves to "braille"; "tty" stays tty.
+// Fixture files carry one trailing "\n" from the harness printf, stripped
+// before comparing.
+
+/// Harness `Theme::c` / `Fx::reset` values under the defaults above.
+fn harness_colors() -> (String, String) {
+    let theme = default_theme();
+    let meter_bg = color("meter_bg", &theme, false, true);
+    let reset = format!(
+        "{}{}{}",
+        "\x1b[0m",                             // Fx::reset_base (btop_tools.cpp:749)
+        color("main_fg", &theme, false, true), // Term::fg (btop_theme.cpp:468)
+        color("main_bg", &theme, false, true), // Term::bg
+    );
+    (meter_bg, reset)
+}
+
+fn fixture_bytes(name: &str) -> Vec<u8> {
+    let mut bytes = std::fs::read(fixture_dir().join(name)).unwrap();
+    assert_eq!(bytes.pop(), Some(b'\n'), "{name}: harness printf newline");
+    bytes
+}
+
+#[test]
+fn byte_parity_meter_50() {
+    // Draw::Meter(50, "cpu", false)(75).
+    let theme = default_theme();
+    let g = gradient("cpu", &theme, false);
+    let (meter_bg, reset) = harness_colors();
+    let out = meter(50, &g, &meter_bg, &reset, 75, false);
+    assert_eq!(out.as_bytes(), fixture_bytes("meter_50.ans"));
+}
+
+#[test]
+fn byte_parity_graph_default() {
+    // Draw::Graph(20, 5, "cpu", {10..80 step 10}, "default").
+    let theme = default_theme();
+    let g = gradient("cpu", &theme, false);
+    let (_, reset) = harness_colors();
+    let data: Vec<i64> = (1..=8).map(|i| i * 10).collect();
+    let graph = Graph::new(opts(g, 20, 5, "braille", false, false, 0, 0), &reset, &data);
+    assert_eq!(
+        graph.render().as_bytes(),
+        fixture_bytes("graph_default.ans")
+    );
+}
+
+#[test]
+fn byte_parity_graph_tty() {
+    // Draw::Graph(20, 5, "cpu", {10..80 step 10}, "tty").
+    let theme = default_theme();
+    let g = gradient("cpu", &theme, false);
+    let (_, reset) = harness_colors();
+    let data: Vec<i64> = (1..=8).map(|i| i * 10).collect();
+    let graph = Graph::new(opts(g, 20, 5, "tty", false, false, 0, 0), &reset, &data);
+    assert_eq!(graph.render().as_bytes(), fixture_bytes("graph_tty.ans"));
 }

@@ -17,6 +17,7 @@ dependencies = [
 name = "btop-draw"
 version = "0.1.0"
 dependencies = [
+ "btop-config",
  "btop-tools",
 ]
 
