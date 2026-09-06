@@ -97,6 +97,14 @@ impl Config {
 
     /// Load `key="value"` lines. Returns one warning string per unknown or
     /// malformed line. Mirrors Config::load dispatch (src/btop_config.cpp:799-830).
+    /// Bool accepts exactly `true`/`false`/`True`/`False` (C++ `isbool`,
+    /// src/btop_tools.hpp:268-270); int accepts ASCII digits only, no sign
+    /// (C++ `isint`, src/btop_tools.hpp:278-280), with `i64` range enforced
+    /// via parse. Quotes are stripped only in the strings branch, exactly one
+    /// surrounding pair (C++ cpp:817-821).
+    /// Deliberate deviations that remain: unknown keys and malformed lines
+    /// produce warnings here (mandated by the plan), while C++ silently
+    /// ignores unknown names (cpp:793-796).
     pub fn load(&mut self, path: &Path) -> Vec<String> {
         let mut warnings = Vec::new();
         let Ok(text) = std::fs::read_to_string(path) else {
@@ -108,31 +116,43 @@ impl Config {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let Some((name, mut value)) = line.split_once('=') else {
+            let Some((name, value)) = line.split_once('=') else {
                 warnings.push(format!("malformed line: {line}"));
                 continue;
             };
             let name = name.trim();
-            value = value.trim().trim_matches('"');
+            let token = value.trim();
             if self.bools.contains_key(name) {
-                match value.to_ascii_lowercase().as_str() {
-                    "true" => {
+                match token {
+                    "true" | "True" => {
                         self.set_b(name, true);
                     }
-                    "false" => {
+                    "false" | "False" => {
                         self.set_b(name, false);
                     }
-                    _ => warnings.push(format!("invalid bool {name}={value}")),
+                    _ => warnings.push(format!("invalid bool {name}={token}")),
                 }
             } else if self.ints.contains_key(name) {
-                match value.parse::<i64>() {
-                    Ok(v) => {
+                let shape_ok = !token.is_empty() && token.bytes().all(|b| b.is_ascii_digit());
+                let parsed = if shape_ok {
+                    token.parse::<i64>().ok()
+                } else {
+                    None
+                };
+                match parsed {
+                    Some(v) => {
                         self.set_i(name, v);
                     }
-                    Err(_) => warnings.push(format!("invalid int {name}={value}")),
+                    None => warnings.push(format!("invalid int {name}={token}")),
                 }
             } else if self.strings.contains_key(name) {
-                self.set_s(name, value.to_string());
+                let unquoted = if token.len() >= 2 && token.starts_with('"') && token.ends_with('"')
+                {
+                    &token[1..token.len() - 1]
+                } else {
+                    token
+                };
+                self.set_s(name, unquoted.to_string());
             } else {
                 warnings.push(format!("unknown key: {name}"));
             }
