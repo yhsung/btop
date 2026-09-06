@@ -8,11 +8,13 @@ use std::ffi::{c_void, CStr, CString};
 use std::os::raw::c_char;
 
 #[derive(Debug, Default)]
-pub struct RealBackend;
+pub struct RealBackend {
+    gpu: Option<GpuState>,
+}
 
 impl RealBackend {
     pub fn new() -> Self {
-        Self
+        Self { gpu: None }
     }
 }
 
@@ -65,6 +67,7 @@ extern "C" {
 // ---- M2h(a): IOHID thermal via CoreFoundation/IOKit (mirrors sensors.cpp) ----
 
 /// Minimal CF ownership guard mirroring C++ CFRef (btop_collect.cpp:129-149).
+#[derive(Debug)]
 pub(crate) struct Cf(*const c_void);
 impl Drop for Cf {
     fn drop(&mut self) {
@@ -118,6 +121,22 @@ extern "C" {
         key_cb: *const c_void,
         val_cb: *const c_void,
     ) -> *const c_void;
+    // CoreFoundation/CFDictionary.h:413
+    // `CFMutableDictionaryRef CFDictionaryCreateMutableCopy(CFAllocatorRef, CFIndex, CFDictionaryRef);`
+    fn CFDictionaryCreateMutableCopy(
+        alloc: *const c_void,
+        capacity: isize,
+        src: *const c_void,
+    ) -> *mut c_void;
+    // CoreFoundation/CFDictionary.h:423 `CFIndex CFDictionaryGetCount(CFDictionaryRef theDict);`
+    fn CFDictionaryGetCount(dict: *const c_void) -> isize;
+    // CoreFoundation/CFDictionary.h:514
+    // `const void *CFDictionaryGetValue(CFDictionaryRef theDict, const void *key);`
+    fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
+    // CoreFoundation/CFData.h:41 `CFIndex CFDataGetLength(CFDataRef theData);`
+    fn CFDataGetLength(data: *const c_void) -> isize;
+    // CoreFoundation/CFData.h:44 `const UInt8 *CFDataGetBytePtr(CFDataRef theData);`
+    fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
 }
 
 #[link(name = "IOKit", kind = "framework")]
@@ -148,6 +167,81 @@ extern "C" {
     ) -> *const c_void;
     // tbd: _IOHIDEventGetFloatValue.
     fn IOHIDEventGetFloatValue(event: *const c_void, field: i32) -> f64;
+    // IOKit/IOKitLib.h:1329 `CFMutableDictionaryRef IOServiceMatching(const char *name);`
+    // CF_RETURNS_RETAINED, but consumed by GetMatchingServices below — never Cf-wrapped.
+    fn IOServiceMatching(name: *const c_char) -> *mut c_void;
+    // IOKit/IOKitLib.h:443 `kern_return_t IOServiceGetMatchingServices(mach_port_t,
+    // CFDictionaryRef CF_RELEASES_ARGUMENT, io_iterator_t *);` — always consumes matching.
+    fn IOServiceGetMatchingServices(
+        main_port: u32,
+        matching: *mut c_void,
+        existing: *mut u32,
+    ) -> i32;
+    // IOKit/IOKitLib.h:392 `io_object_t IOIteratorNext(io_iterator_t iterator);`
+    fn IOIteratorNext(iterator: u32) -> u32;
+    // IOKit/IOKitLib.h:267 `kern_return_t IOObjectRelease(io_object_t object);`
+    fn IOObjectRelease(obj: u32) -> i32;
+    // IOKit/IOKitLib.h:1087 `IORegistryEntryGetName(io_registry_entry_t, io_name_t[128]);`
+    fn IORegistryEntryGetName(entry: u32, name: *mut c_char) -> i32;
+    // IOKit/IOKitLib.h:1171 `IORegistryEntryCreateCFProperties(io_registry_entry_t,
+    // CFMutableDictionaryRef *, CFAllocatorRef, IOOptionBits);`
+    fn IORegistryEntryCreateCFProperties(
+        entry: u32,
+        props: *mut *const c_void,
+        alloc: *const c_void,
+        options: u32,
+    ) -> i32;
+    // IOKit/IOKitLib.h:112 `const mach_port_t kIOMainPortDefault` (exported, see IOKit.tbd).
+    static kIOMainPortDefault: u32;
+}
+
+// ---- M2h(b): IOReport GPU subscription (private SPI, mirrors btop_collect.cpp:80-97) ----
+// Symbols verified present in libIOReport.tbd via
+// `grep -o "IOReport[A-Za-z]*" libIOReport.tbd | sort -u` (all 12 listed).
+#[link(name = "IOReport", kind = "dylib")]
+extern "C" {
+    // btop_collect.cpp:82-83.
+    fn IOReportCopyChannelsInGroup(
+        group: *const c_void,
+        subgroup: *const c_void,
+        a: u64,
+        b: u64,
+        c: u64,
+    ) -> *const c_void;
+    // btop_collect.cpp:84.
+    fn IOReportMergeChannels(a: *const c_void, b: *const c_void, c: *const c_void);
+    // btop_collect.cpp:85-86.
+    fn IOReportCreateSubscription(
+        a: *const c_void,
+        b: *mut c_void,
+        c: *mut *mut c_void,
+        d: u64,
+        e: *const c_void,
+    ) -> *mut c_void;
+    // btop_collect.cpp:87-88.
+    fn IOReportCreateSamples(
+        sub: *const c_void,
+        chan: *const c_void,
+        c: *const c_void,
+    ) -> *const c_void;
+    // btop_collect.cpp:89.
+    fn IOReportCreateSamplesDelta(
+        a: *const c_void,
+        b: *const c_void,
+        c: *const c_void,
+    ) -> *const c_void;
+    // btop_collect.cpp:90-92.
+    fn IOReportChannelGetGroup(item: *const c_void) -> *const c_void;
+    fn IOReportChannelGetSubGroup(item: *const c_void) -> *const c_void;
+    fn IOReportChannelGetChannelName(item: *const c_void) -> *const c_void;
+    // btop_collect.cpp:93.
+    fn IOReportSimpleGetIntegerValue(item: *const c_void, idx: i32) -> i64;
+    // btop_collect.cpp:94.
+    fn IOReportChannelGetUnitLabel(item: *const c_void) -> *const c_void;
+    // btop_collect.cpp:95-97.
+    fn IOReportStateGetCount(item: *const c_void) -> i32;
+    fn IOReportStateGetNameForIndex(item: *const c_void, idx: i32) -> *const c_void;
+    fn IOReportStateGetResidency(item: *const c_void, idx: i32) -> i64;
 }
 
 // CoreFoundation/CFDictionary.h:118,169
@@ -446,6 +540,371 @@ impl RealBackend {
     }
 }
 
+// ---- M2h(b): AppleSi GPU via IOReport (mirrors btop_collect.cpp:211-335, 404-535) ----
+
+/// Owned IOReport subscription state. `prev_res`/`prev_energy` are independent
+/// sample pairs: the first call per method primes prev and yields no delta
+/// (like the C++ prev_sample init at cpp:328).
+#[derive(Debug)]
+struct GpuState {
+    sub: Cf,
+    chan: Cf,
+    prev_res: Option<Cf>,
+    prev_energy: Option<Cf>,
+    freqs_mhz: Vec<u32>,
+}
+
+/// Decode pmgr "voltage-states9" CFData: (freq_hz u32 LE, voltage u32) pairs at
+/// 8B stride → MHz, skipping zeros (cpp:271-276).
+pub(crate) fn decode_freq_pairs(data: &[u8]) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 7 < data.len() {
+        let freq = u32::from_le_bytes(data[i..i + 4].try_into().unwrap_or([0; 4]));
+        if freq > 0 {
+            out.push(freq / 1_000_000);
+        }
+        i += 8;
+    }
+    out
+}
+
+/// Offset past IDLE/OFF/DOWN states: last such index + 1 (cpp:489-495).
+/// A trailing idle state yields offset == len (empty active set).
+pub(crate) fn residency_offset(names: &[String]) -> usize {
+    let mut offset = 0;
+    for (s, name) in names.iter().enumerate() {
+        if name == "IDLE" || name == "OFF" || name == "DOWN" {
+            offset = s + 1;
+        }
+    }
+    offset
+}
+
+/// Unit label → enum. Check order mirrors cpp:526-528 (nJ, uJ|µJ, mJ).
+/// Unknown labels default to Micro: observed units are µJ and the enum has no
+/// Joules variant (C++ would divide by 1.0, i.e. treat as Joules).
+pub(crate) fn parse_energy_unit(label: &str) -> EnergyUnit {
+    if label.contains("nJ") {
+        EnergyUnit::Nano
+    } else if label.contains("uJ") || label.contains("µJ") {
+        EnergyUnit::Micro
+    } else if label.contains("mJ") {
+        EnergyUnit::Milli
+    } else {
+        EnergyUnit::Micro
+    }
+}
+
+/// io_name_t[128] equals "pmgr" (cpp:263).
+pub(crate) fn name_is_pmgr(name: &[c_char; 128]) -> bool {
+    let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+    let bytes: Vec<u8> = name[..len].iter().map(|&c| c as u8).collect();
+    bytes == b"pmgr"
+}
+
+/// kIOMainPortDefault (IOKitLib.h:107-112; value exported from IOKit).
+fn main_port() -> u32 {
+    // SAFETY: single static read of an exported IOKit constant.
+    unsafe { kIOMainPortDefault }
+}
+
+/// CFStringRef → Rust String (UTF-8, 256B cap like cpp:228-234). Null → "".
+fn cf_str_value(s: *const c_void) -> String {
+    if s.is_null() {
+        return String::new();
+    }
+    let mut buf = [0 as c_char; 256];
+    // SAFETY: single FFI call on a non-null CFString handle.
+    let ok = unsafe { CFStringGetCString(s, buf.as_mut_ptr(), buf.len() as isize, K_CF_STR_UTF8) };
+    if ok == 0 {
+        return String::new();
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let bytes: Vec<u8> = buf[..len].iter().map(|&c| c as u8).collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Read one registry entry's pmgr table into `out` (cpp:264-279).
+/// `entry` must already be name-checked as "pmgr" by the caller.
+fn pmgr_entry_freqs(entry: u32, out: &mut Vec<u32>) {
+    let mut props: *const c_void = std::ptr::null();
+    // SAFETY: single FFI call; props null-checked via Cf::new.
+    let rc = unsafe { IORegistryEntryCreateCFProperties(entry, &mut props, std::ptr::null(), 0) };
+    if rc != KERN_SUCCESS {
+        return;
+    }
+    let props = match Cf::new(props) {
+        Some(p) => p,
+        None => return,
+    };
+    let key = match cf_string(c"voltage-states9") {
+        Some(k) => k,
+        None => return,
+    };
+    // SAFETY: single FFI call on live props + key handles.
+    let data = unsafe { CFDictionaryGetValue(props.get(), key.get()) };
+    if data.is_null() {
+        return;
+    }
+    // SAFETY: single FFI call on a live CFData handle.
+    let len = unsafe { CFDataGetLength(data) };
+    if len <= 0 {
+        return;
+    }
+    // SAFETY: single FFI call; bytes copied out while `props` (owner) is alive.
+    let ptr = unsafe { CFDataGetBytePtr(data) };
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: single slice construction over (ptr, len) owned by live `props`;
+    // copied to an owned Vec immediately.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) }.to_vec();
+    out.extend(decode_freq_pairs(&bytes));
+}
+
+/// GPU DVFS table from the IORegistry "pmgr" node (cpp:251-281). Empty when the
+/// node/table is absent (Intel/VM) — clock then degrades.
+fn pmgr_freqs_mhz() -> Vec<u32> {
+    let mut out = Vec::new();
+    // SAFETY: single FFI call; null-checked before any use.
+    let matching = unsafe { IOServiceMatching(c"AppleARMIODevice".as_ptr()) };
+    if matching.is_null() {
+        return out;
+    }
+    // Consumed by GetMatchingServices (IOKitLib.h:438-443 "always consumed"),
+    // hence never Cf-wrapped (wrapping would over-release).
+    let mut iter: u32 = 0;
+    // SAFETY: single FFI call; rc + iter checked before any use.
+    let rc = unsafe { IOServiceGetMatchingServices(main_port(), matching, &mut iter) };
+    if rc != KERN_SUCCESS || iter == 0 {
+        return out;
+    }
+    loop {
+        // SAFETY: single FFI call; zero means iteration end.
+        let entry = unsafe { IOIteratorNext(iter) };
+        if entry == 0 {
+            break;
+        }
+        let mut name = [0 as c_char; 128];
+        // SAFETY: single FFI call on a live entry handle.
+        let is_pmgr = unsafe { IORegistryEntryGetName(entry, name.as_mut_ptr()) } == KERN_SUCCESS
+            && name_is_pmgr(&name);
+        if is_pmgr {
+            pmgr_entry_freqs(entry, &mut out);
+        }
+        // SAFETY: single FFI call releasing the iterated entry (IOKitLib.h:260-267).
+        unsafe {
+            IOObjectRelease(entry);
+        }
+    }
+    // SAFETY: single FFI call releasing the iterator.
+    unsafe {
+        IOObjectRelease(iter);
+    }
+    out
+}
+
+/// CreateSamples + delta-vs-prev. First call primes prev and returns None
+/// (no delta yet, like the C++ prev_sample init at cpp:328).
+fn take_delta(prev: &mut Option<Cf>, sub: &Cf, chan: &Cf) -> Option<Cf> {
+    // SAFETY: single FFI call; null-checked via Cf::new.
+    let cur = Cf::new(unsafe { IOReportCreateSamples(sub.get(), chan.get(), std::ptr::null()) })?;
+    let old = prev.take();
+    match old {
+        None => {
+            *prev = Some(cur);
+            None
+        }
+        Some(old) => {
+            // SAFETY: single FFI call on two live sample handles.
+            let delta = Cf::new(unsafe {
+                IOReportCreateSamplesDelta(old.get(), cur.get(), std::ptr::null())
+            });
+            // C++ releases prev and stores cur before checking delta (cpp:452-459).
+            *prev = Some(cur);
+            delta
+        }
+    }
+}
+
+/// Borrowed "IOReportChannels" items of a sample/delta dict. Items are owned
+/// by `sample` (never Cf-wrapped); the caller holds `sample` alive.
+fn sample_items(sample: &Cf) -> Vec<*const c_void> {
+    let mut out = Vec::new();
+    let key = match cf_string(c"IOReportChannels") {
+        Some(k) => k,
+        None => return out,
+    };
+    // SAFETY: single FFI call on live sample + key handles.
+    let arr = unsafe { CFDictionaryGetValue(sample.get(), key.get()) };
+    if arr.is_null() {
+        return out;
+    }
+    // SAFETY: single FFI call on a live CFArray handle.
+    let n = unsafe { CFArrayGetCount(arr) };
+    for i in 0..n {
+        // SAFETY: single FFI call; null items skipped by callers.
+        let item = unsafe { CFArrayGetValueAtIndex(arr, i) };
+        out.push(item);
+    }
+    out
+}
+
+/// Group/subgroup/channel strings of one IOReportChannels item.
+fn channel_names(item: *const c_void) -> (String, String, String) {
+    // SAFETY: single FFI call; null → "" via cf_str_value.
+    let group = unsafe { IOReportChannelGetGroup(item) };
+    // SAFETY: single FFI call; null → "" via cf_str_value.
+    let subgroup = unsafe { IOReportChannelGetSubGroup(item) };
+    // SAFETY: single FFI call; null → "" via cf_str_value.
+    let channel = unsafe { IOReportChannelGetChannelName(item) };
+    (
+        cf_str_value(group),
+        cf_str_value(subgroup),
+        cf_str_value(channel),
+    )
+}
+
+/// Item is the GPUPH residency channel (cpp:480).
+fn is_gpu_perf_item(item: *const c_void) -> bool {
+    let (g, sg, ch) = channel_names(item);
+    g == "GPU Stats" && sg == "GPU Performance States" && ch == "GPUPH"
+}
+
+/// Item is the GPU energy channel (cpp:520).
+fn is_gpu_energy_item(item: *const c_void) -> bool {
+    let (g, _, ch) = channel_names(item);
+    g == "Energy Model" && ch == "GPU Energy"
+}
+
+/// Raw (name, residency, freq_mhz) for states past the idle offset
+/// (cpp:488-504). freq = freqs[s-offset], or 0 when the pmgr table is short.
+/// Last GPUPH item wins (C++ assigns, not accumulates, per channel).
+fn parse_residency(delta: &Cf, freqs: &[u32]) -> Vec<(String, u64, u64)> {
+    let mut out = Vec::new();
+    for item in sample_items(delta) {
+        if item.is_null() || !is_gpu_perf_item(item) {
+            continue;
+        }
+        // SAFETY: single FFI call on a live channel dict.
+        let count = unsafe { IOReportStateGetCount(item) };
+        if count <= 0 {
+            continue;
+        }
+        let mut names = Vec::with_capacity(count as usize);
+        let mut res = Vec::with_capacity(count as usize);
+        for s in 0..count {
+            // SAFETY: single FFI call on a live channel dict.
+            let nm = unsafe { IOReportStateGetNameForIndex(item, s) };
+            // SAFETY: single FFI call on a live channel dict.
+            let r = unsafe { IOReportStateGetResidency(item, s) };
+            names.push(cf_str_value(nm));
+            res.push(r.max(0) as u64);
+        }
+        let off = residency_offset(&names);
+        let mut mapped = Vec::new();
+        for (k, s) in (off..names.len()).enumerate() {
+            let freq = freqs.get(k).copied().unwrap_or(0) as u64;
+            mapped.push((names[s].clone(), res[s], freq));
+        }
+        out = mapped;
+    }
+    out
+}
+
+/// (raw value, unit) of the GPU Energy channel (cpp:520-528). dt is
+/// caller-injected per spec S2 (power_mw takes dt_ms): the delta value's
+/// cadence must match the caller cadence for correct mW.
+fn parse_energy(delta: &Cf) -> Option<(u64, EnergyUnit)> {
+    for item in sample_items(delta) {
+        if item.is_null() || !is_gpu_energy_item(item) {
+            continue;
+        }
+        // SAFETY: single FFI call on a live channel dict.
+        let unit = unsafe { IOReportChannelGetUnitLabel(item) };
+        // SAFETY: single FFI call on a live channel dict.
+        let val = unsafe { IOReportSimpleGetIntegerValue(item, 0) };
+        return Some((val.max(0) as u64, parse_energy_unit(&cf_str_value(unit))));
+    }
+    None
+}
+
+/// Copy + merge the GPU Stats / Energy Model channel dicts into one mutable
+/// dict for the subscription (cpp:289-309). None when no channels exist.
+fn gpu_channels() -> Option<Cf> {
+    let gpu_group = cf_string(c"GPU Stats")?;
+    let gpu_sub = cf_string(c"GPU Performance States")?;
+    let energy_group = cf_string(c"Energy Model")?;
+    // SAFETY: single FFI call; null-checked below (None when group absent).
+    let gpu =
+        Cf::new(unsafe { IOReportCopyChannelsInGroup(gpu_group.get(), gpu_sub.get(), 0, 0, 0) });
+    // SAFETY: single FFI call; null subgroup subscribes to all (cpp:295).
+    let energy = Cf::new(unsafe {
+        IOReportCopyChannelsInGroup(energy_group.get(), std::ptr::null(), 0, 0, 0)
+    });
+    if gpu.is_none() && energy.is_none() {
+        return None; // cpp:297-300: no channels → GPU monitoring unavailable
+    }
+    if let (Some(g), Some(e)) = (gpu.as_ref(), energy.as_ref()) {
+        // SAFETY: single FFI call merging energy into the gpu dict (cpp:304).
+        unsafe {
+            IOReportMergeChannels(g.get(), e.get(), std::ptr::null());
+        }
+    }
+    let base = gpu.as_ref().or(energy.as_ref())?;
+    // SAFETY: single FFI call on a live channel dict.
+    let size = unsafe { CFDictionaryGetCount(base.get()) };
+    // SAFETY: single FFI call; null-checked via Cf::new.
+    Cf::new(
+        unsafe { CFDictionaryCreateMutableCopy(std::ptr::null(), size, base.get()) }
+            as *const c_void,
+    )
+}
+
+/// Create the IOReport subscription over the merged channels (cpp:312-319).
+/// Cf-wrapped: C++ releases ior_sub via CFRelease at cpp:341.
+fn gpu_subscribe(chan: &Cf) -> Option<Cf> {
+    let mut sub_dict: *mut c_void = std::ptr::null_mut();
+    // SAFETY: single FFI call; null-checked via Cf::new.
+    Cf::new(unsafe {
+        IOReportCreateSubscription(
+            std::ptr::null(),
+            chan.get() as *mut c_void,
+            &mut sub_dict,
+            0,
+            std::ptr::null(),
+        )
+    } as *const c_void)
+}
+
+impl RealBackend {
+    /// Lazily build the IOReport subscription (cpp:283-335). Failure at any
+    /// step leaves `gpu` as None (degrade → Ok(empty), never Err).
+    fn ensure_gpu(&mut self) -> bool {
+        if self.gpu.is_some() {
+            return true;
+        }
+        let freqs = pmgr_freqs_mhz();
+        let chan = match gpu_channels() {
+            Some(c) => c,
+            None => return false,
+        };
+        let sub = match gpu_subscribe(&chan) {
+            Some(s) => s,
+            None => return false,
+        };
+        self.gpu = Some(GpuState {
+            sub,
+            chan,
+            prev_res: None,
+            prev_energy: None,
+            freqs_mhz: freqs,
+        });
+        true
+    }
+}
+
 // Pure NET_RT_IFLIST2 parser (C++ btop_collect.cpp:1526-1542): walk if_msghdr2
 // records (160B, C-measured), keep RTM_IFINFO2(18), read ibytes@96/obytes@104
 // (u64), name from trailing sockaddr_dl (nlen@+5, data@+8).
@@ -667,15 +1126,38 @@ impl MacOsBackend for RealBackend {
         Ok(out)
     }
 
-    // TODO(M2h): IOReport GPU residency path. Missing IOReport on AppleSi →
-    // empty + no panic per spec S2.
+    // C++ cpp:443-517 via take_delta + parse_residency. First call primes
+    // prev_res and yields empty; missing IOReport → empty (never Err, spec S2).
     fn gpu_residency(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError> {
-        Ok(vec![])
+        if !self.ensure_gpu() {
+            return Ok(vec![]);
+        }
+        let st = match self.gpu.as_mut() {
+            Some(s) => s,
+            None => return Ok(vec![]), // unreachable after ensure; degrade anyway
+        };
+        let delta = match take_delta(&mut st.prev_res, &st.sub, &st.chan) {
+            Some(d) => d,
+            None => return Ok(vec![]),
+        };
+        Ok(parse_residency(&delta, &st.freqs_mhz))
     }
 
-    // TODO(M2h): IOReport Energy Model path. Intel → Unsupported (M2 scope).
+    // C++ cpp:519-535 via take_delta + parse_energy. First call primes
+    // prev_energy and yields zero; no channel → (0, Nano) (never Err, spec S2).
     fn gpu_energy(&mut self) -> Result<(u64, EnergyUnit), CollectError> {
-        Ok((0, EnergyUnit::Nano))
+        if !self.ensure_gpu() {
+            return Ok((0, EnergyUnit::Nano));
+        }
+        let st = match self.gpu.as_mut() {
+            Some(s) => s,
+            None => return Ok((0, EnergyUnit::Nano)),
+        };
+        let delta = match take_delta(&mut st.prev_energy, &st.sub, &st.chan) {
+            Some(d) => d,
+            None => return Ok((0, EnergyUnit::Nano)),
+        };
+        Ok(parse_energy(&delta).unwrap_or((0, EnergyUnit::Nano)))
     }
 
     // C++ btop_collect.cpp:346-402 get_gpu_temp_iohid: GPU-matching sensor
@@ -787,5 +1269,59 @@ mod tests {
         assert!(!is_gpu_sensor("PMU TPxh"));
         assert!(!is_gpu_sensor("PMU tdie3"));
         assert!(!is_gpu_sensor(""));
+    }
+
+    // M2h(b) pure helpers: freq-pair decode, idle offset, unit parse, pmgr name.
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn decode_freq_pairs_reads_hz_le_at_8b_stride() {
+        // Two (freq_hz, voltage) pairs: 700MHz, 0 (skipped), plus short tail.
+        let mut data = Vec::new();
+        data.extend_from_slice(&700_000_000u32.to_le_bytes());
+        data.extend_from_slice(&1234u32.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&5678u32.to_le_bytes());
+        data.extend_from_slice(&[9u8; 3]); // short tail ignored
+        assert_eq!(decode_freq_pairs(&data), vec![700]);
+        assert!(decode_freq_pairs(&[]).is_empty());
+        assert!(decode_freq_pairs(&[1u8; 7]).is_empty());
+    }
+
+    #[test]
+    fn residency_offset_skips_leading_idle_states() {
+        assert_eq!(residency_offset(&names(&["IDLE", "P0", "P1"])), 1);
+        assert_eq!(residency_offset(&names(&["OFF", "IDLE", "P0"])), 2);
+        assert_eq!(residency_offset(&names(&["P0", "P1"])), 0);
+        assert_eq!(residency_offset(&names(&[])), 0);
+        // Trailing DOWN: offset == len → empty active set (cpp:498 loop empty).
+        assert_eq!(residency_offset(&names(&["P0", "DOWN"])), 2);
+        // Last idle-like wins (cpp:493 overwrites offset each hit).
+        assert_eq!(residency_offset(&names(&["IDLE", "P0", "OFF", "P1"])), 3);
+    }
+
+    #[test]
+    fn parse_energy_unit_follows_cpp_check_order() {
+        // cpp:526-528: nJ first, then uJ|µJ, then mJ; unknown → Micro.
+        assert_eq!(parse_energy_unit("nJ"), EnergyUnit::Nano);
+        assert_eq!(parse_energy_unit("uJ"), EnergyUnit::Micro);
+        assert_eq!(parse_energy_unit("µJ"), EnergyUnit::Micro); // \u{c2}\u{b5}J
+        assert_eq!(parse_energy_unit("mJ"), EnergyUnit::Milli);
+        assert_eq!(parse_energy_unit(""), EnergyUnit::Micro);
+        assert_eq!(parse_energy_unit("J"), EnergyUnit::Micro);
+    }
+
+    #[test]
+    fn name_is_pmgr_matches_exact_entry_name() {
+        let mut name = [0 as std::os::raw::c_char; 128];
+        for (i, b) in b"pmgr".iter().enumerate() {
+            name[i] = *b as std::os::raw::c_char;
+        }
+        assert!(name_is_pmgr(&name));
+        name[4] = b'x' as std::os::raw::c_char;
+        assert!(!name_is_pmgr(&name));
+        assert!(!name_is_pmgr(&[0 as std::os::raw::c_char; 128]));
     }
 }

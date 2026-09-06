@@ -1,5 +1,6 @@
 #![cfg(target_os = "macos")]
 use btop_collect::backend::MacOsBackend;
+use btop_collect::gpu::EnergyUnit;
 use btop_collect::real::RealBackend;
 
 #[test]
@@ -43,6 +44,29 @@ fn smoke_thermal_live_iohid() {
         assert!(!hid.is_empty(), "BTOP_LIVE_THERMAL=1: PMU TP*g GPU sensors");
     }
     assert!(hid.iter().all(|&t| t > 0.0 && t < 150.0));
+}
+
+#[test]
+fn smoke_gpu_live_ioreport() {
+    let mut b = RealBackend::new();
+    // Degrade-tolerant like thermal: headless/VM/Intel boxes yield empty
+    // residency and zero energy (never Err), so shapes are checked only when
+    // present. First round primes the per-method prev samples (no delta yet).
+    let _ = b.gpu_residency().expect("gpu_residency never Err");
+    let _ = b.gpu_energy().expect("gpu_energy never Err");
+    // Second round can carry a real delta on IOReport-capable hardware.
+    let states = b.gpu_residency().expect("gpu_residency never Err");
+    for (name, _res, _freq) in &states {
+        assert!(!name.is_empty(), "state names non-empty");
+    }
+    let (_val, unit) = b.gpu_energy().expect("gpu_energy never Err");
+    assert!(
+        matches!(
+            unit,
+            EnergyUnit::Nano | EnergyUnit::Micro | EnergyUnit::Milli
+        ),
+        "energy unit is a valid enum"
+    );
 }
 
 #[test]
