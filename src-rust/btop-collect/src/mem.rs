@@ -18,7 +18,7 @@ pub fn vm_stats(
     page: u64,
     total: u64,
 ) -> VmDerived {
-    let used = (active + wired).saturating_mul(page);
+    let used = active.saturating_add(wired).saturating_mul(page);
     VmDerived {
         used,
         avail: total.saturating_sub(used),
@@ -99,6 +99,9 @@ mod tests {
     #[test]
     fn io_activity_clamps() {
         assert_eq!(io_activity(0, 0), 0);
+        assert_eq!(io_activity(1_048_576, 0), 1);
+        assert_eq!(io_activity(25_000_000, 25_000_000), 48); // 50M/1MiB=47.68→48
+        assert_eq!(io_activity(200_000_000, 0), 100); // 190.7→clamp 100
         assert_eq!(io_activity(u64::MAX, u64::MAX), 100);
     }
 }
