@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "btop-collect"
+version = "0.1.0"
+
+[[package]]
 name = "btop-config"
 version = "0.1.0"
 dependencies = [
