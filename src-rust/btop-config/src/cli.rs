@@ -24,7 +24,7 @@ pub struct Cli {
 /// printing side effects (`usage()`/`help()`/`version()`/`default_config()`).
 pub fn parse(args: &[String]) -> Result<Cli, i32> {
     let mut cli = Cli::default();
-    let mut it = args.iter().peekable();
+    let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--default-config" | "-h" | "--help" | "--version" | "-v" | "-V" => return Err(0),
@@ -43,16 +43,16 @@ pub fn parse(args: &[String]) -> Result<Cli, i32> {
                 }
                 cli.force_tty = Some(false)
             }
-            "-c" | "--config" => cli.config_file = Some(PathBuf::from(next_value(&mut it, arg)?)),
-            "-f" | "--filter" => cli.filter = Some(next_value(&mut it, arg)?),
+            "-c" | "--config" => cli.config_file = Some(PathBuf::from(next_value(&mut it)?)),
+            "-f" | "--filter" => cli.filter = Some(next_value(&mut it)?),
             "-p" | "--preset" => {
-                let raw = next_value(&mut it, arg)?;
+                let raw = next_value(&mut it)?;
                 let v = stoi_prefix(&raw).map_err(|_| 1)?;
                 cli.preset = Some(v.clamp(0, 9) as u32)
             }
-            "--themes-dir" => cli.themes_dir = Some(PathBuf::from(next_value(&mut it, arg)?)),
+            "--themes-dir" => cli.themes_dir = Some(PathBuf::from(next_value(&mut it)?)),
             "-u" | "--update" => {
-                let raw = next_value(&mut it, arg)?;
+                let raw = next_value(&mut it)?;
                 let v = stoi_prefix(&raw).map_err(|_| 1)?;
                 cli.updates = Some(v.max(100) as u32)
             }
@@ -62,14 +62,8 @@ pub fn parse(args: &[String]) -> Result<Cli, i32> {
     Ok(cli)
 }
 
-fn next_value(
-    it: &mut std::iter::Peekable<std::slice::Iter<String>>,
-    flag: &str,
-) -> Result<String, i32> {
-    it.next().cloned().ok_or_else(|| {
-        eprintln!("{flag} requires a value");
-        1
-    })
+fn next_value(it: &mut std::slice::Iter<'_, String>) -> Result<String, i32> {
+    it.next().cloned().ok_or(1)
 }
 
 /// Mirror C++ `std::stoi`: skip leading ASCII spaces, optional single

@@ -21,7 +21,11 @@ pub fn s_replace(s: &str, from: &str, to: &str) -> String {
 }
 
 /// Strip leading copies of token `t`. Mirrors Tools::ltrim.
+/// Empty token returns the input (C++ would loop).
 pub fn ltrim<'a>(mut s: &'a str, t: &str) -> &'a str {
+    if t.is_empty() {
+        return s;
+    }
     while let Some(rest) = s.strip_prefix(t) {
         s = rest;
     }
@@ -29,7 +33,11 @@ pub fn ltrim<'a>(mut s: &'a str, t: &str) -> &'a str {
 }
 
 /// Strip trailing copies of token `t`. Mirrors Tools::rtrim.
+/// Empty token returns the input (C++ would loop).
 pub fn rtrim<'a>(mut s: &'a str, t: &str) -> &'a str {
+    if t.is_empty() {
+        return s;
+    }
     while let Some(rest) = s.strip_suffix(t) {
         s = rest;
     }
@@ -46,7 +54,7 @@ fn char_len(s: &str) -> usize {
 }
 
 /// Pad/truncate to width `x`. `limit=true` truncates overlong input.
-/// Byte-based variant of Tools::ljust/rjust with utf=true, wide=false.
+/// Unicode-scalar variant of Tools::ljust/rjust with utf=true, wide=false.
 pub fn ljust(s: &str, x: usize, limit: bool) -> String {
     let len = char_len(s);
     if limit && len > x {
@@ -139,6 +147,12 @@ mod tests {
         assert_eq!(ltrim("...hello", "."), "hello");
         assert_eq!(rtrim("hello...", "."), "hello");
         assert_eq!(ltrim("hello", "."), "hello");
+    }
+
+    #[test]
+    fn trims_empty_token_returns_input() {
+        assert_eq!(ltrim("x", ""), "x");
+        assert_eq!(rtrim("x", ""), "x");
     }
 
     #[test]

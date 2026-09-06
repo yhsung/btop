@@ -3,6 +3,18 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// Parse `theme[key]=#RRGGBB` lines into key → hex map.
+///
+/// M1 DEFERRAL (deliberate divergence from C++ `loadFile`,
+/// src/btop_theme.cpp:395-427): unknown keys are kept (C++ drops keys not in
+/// `Default_theme`; filtering needs the `Default_theme` key set, a later-plan
+/// asset), and only exact `theme[`...`]=` adjacency is accepted (C++ tolerates
+/// surrounding whitespace). Pinned by
+/// `theme_parse_current_behavior_unknown_keys_kept` in golden.rs until the
+/// `Default_theme` key set lands.
+///
+/// Error-channel note: an unreadable path yields an empty map and a bad hex
+/// value yields `""` from [`hex_to_color`] (no diagnostics), unlike config
+/// load warnings; C++ instead falls back to `Default_theme` (later plan).
 pub fn parse_theme(path: &Path) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let Ok(text) = std::fs::read_to_string(path) else {
