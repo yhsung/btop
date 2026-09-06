@@ -1,4 +1,10 @@
 //! Net math mirroring btop_collect.cpp:1551-1563.
+/// Update one direction counter.
+/// Returns `(speed_Bps, total_bytes, rollover)` for `(val, last, rollover, offset, dt_ms)` inputs.
+/// `dt_ms == 0` yields speed 0 (C++ would divide by zero).
+/// DEFERRED divergences vs cpp:1555-1561: u64-overflow reset becomes saturating_add;
+/// offset reset (`offset > val+rollover → 0`) needs caller-owned offset lifecycle (later wiring task).
+/// `as u64` saturation on extreme speed is intentional (C++ out-of-range is UB).
 pub fn update_counter(
     val: u64,
     last: u64,
@@ -54,5 +60,11 @@ mod tests {
     fn top_tracks_max() {
         assert_eq!(track_top(100, 200), 200);
         assert_eq!(track_top(300, 200), 300);
+    }
+
+    #[test]
+    fn total_subtracts_offset() {
+        let (speed, total, roll) = update_counter(1_002_000, 1_000_000, 0, 500, 1000);
+        assert_eq!((speed, total, roll), (2000, 1_001_500, 0));
     }
 }

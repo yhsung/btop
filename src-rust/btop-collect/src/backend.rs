@@ -21,13 +21,23 @@ pub trait MacOsBackend {
     fn disk_raw(&mut self, mount: &str) -> Result<(u64, u64, u64), CollectError>;
     /// Returns (iface_name, ibytes, obytes) per interface.
     fn if_counters(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError>;
+    fn proc_list(&mut self) -> Result<Vec<ProcRaw>, CollectError>;
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ProcRaw {
+    pub pid: u64,
+    pub name: String,
+    pub cpu_ticks: u64,
+    pub mem_bytes: u64,
+    pub threads: u64,
 }
 
 /// Deterministic replay source for tests. Queues drain FIFO in call order.
 /// Empty-queue fallback per method: `cpu_ticks` → `Err(Unsupported)`,
 /// `load_avg` → `Ok([0,0,0])`, `package_temp` → `Ok(None)`, `core_temps` → `Ok(vec![])`,
 /// `vm_raw` → `Err(Unsupported)`, `swap_raw` → `Ok((0,0,0))`, `disk_raw` → `Ok((0,0,0))`,
-/// `if_counters` → `Ok(vec![])`.
+/// `if_counters` → `Ok(vec![])`, `proc_list` → `Ok(vec![])`.
 /// Tasks 4–6 append their methods here with the same documented fallback.
 #[derive(Debug, Default)]
 pub struct ReplayBackend {
@@ -39,6 +49,7 @@ pub struct ReplayBackend {
     pub swap_raw_q: VecDeque<(u64, u64, u64)>,
     pub disk_raw_q: VecDeque<(u64, u64, u64)>,
     pub if_counters_q: VecDeque<Vec<(String, u64, u64)>>,
+    pub proc_list_q: VecDeque<Vec<ProcRaw>>,
 }
 
 impl MacOsBackend for ReplayBackend {
@@ -69,6 +80,9 @@ impl MacOsBackend for ReplayBackend {
     }
     fn if_counters(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError> {
         Ok(self.if_counters_q.pop_front().unwrap_or_default())
+    }
+    fn proc_list(&mut self) -> Result<Vec<ProcRaw>, CollectError> {
+        Ok(self.proc_list_q.pop_front().unwrap_or_default())
     }
 }
 
