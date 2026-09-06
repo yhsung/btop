@@ -3,7 +3,9 @@
 use crate::backend::{CpuTicks, MacOsBackend, ProcRaw};
 use crate::gpu::EnergyUnit;
 use crate::types::CollectError;
-use std::ffi::CString;
+use std::collections::BTreeMap;
+use std::ffi::{c_void, CStr, CString};
+use std::os::raw::c_char;
 
 #[derive(Debug, Default)]
 pub struct RealBackend;
@@ -61,13 +63,9 @@ extern "C" {
 }
 
 // ---- M2h(a): IOHID thermal via CoreFoundation/IOKit (mirrors sensors.cpp) ----
-use std::ffi::c_void;
-use std::os::raw::c_char;
 
 /// Minimal CF ownership guard mirroring C++ CFRef (btop_collect.cpp:129-149).
-pub struct Cf(*const c_void);
-// SAFETY: Cf owns one +1 retain; never shared across threads (all use is local).
-unsafe impl Send for Cf {}
+pub(crate) struct Cf(*const c_void);
 impl Drop for Cf {
     fn drop(&mut self) {
         if !self.0.is_null() {
@@ -154,7 +152,7 @@ extern "C" {
 
 // CoreFoundation/CFDictionary.h:118,169
 // `const CFDictionaryKeyCallBacks kCFTypeDictionaryKeyCallBacks;` (+ Value variant).
-// Typed opaque: only the address is passed to CFDictionaryCreate.
+// Typed opaque: address-only; never dereferenced, size/layout irrelevant.
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     static kCFTypeDictionaryKeyCallBacks: u8;
@@ -274,7 +272,6 @@ pub(crate) fn select_package_temp(entries: &[(String, f64)]) -> Option<i64> {
 /// Core selection over (Product, temp) entries. Mirrors sensors.cpp:152-175:
 /// tdie indexed (sorted by index) else acc named (sorted by name), avg>0 only.
 pub(crate) fn select_core_temps(entries: &[(String, f64)]) -> Vec<i64> {
-    use std::collections::BTreeMap;
     let mut tdie: BTreeMap<i32, Vec<f64>> = BTreeMap::new();
     let mut acc: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     for (name, temp) in entries {
@@ -306,122 +303,143 @@ pub(crate) fn select_core_temps(entries: &[(String, f64)]) -> Vec<i64> {
     out
 }
 
+fn cf_string(s: &CStr) -> Option<Cf> {
+    // SAFETY: single FFI call; null-checked via Cf::new before any use.
+    let p = unsafe { CFStringCreateWithCString(std::ptr::null(), s.as_ptr(), K_CF_STR_UTF8) };
+    Cf::new(p)
+}
+
+fn cf_number(v: &i32) -> Option<Cf> {
+    // SAFETY: single FFI call; CFNumberCreate copies the value synchronously.
+    let p = unsafe {
+        CFNumberCreate(
+            std::ptr::null(),
+            K_CF_NUMBER_SINT32,
+            v as *const i32 as *const c_void,
+        )
+    };
+    Cf::new(p)
+}
+
+/// Matching dict for Apple-vendor thermal usage (sensors.cpp:53-66).
+fn matching_dict() -> Option<Cf> {
+    let page_key = cf_string(c"PrimaryUsagePage")?;
+    let usage_key = cf_string(c"PrimaryUsage")?;
+    let num_page = cf_number(&HID_PAGE_APPLE_VENDOR)?;
+    let num_usage = cf_number(&HID_USAGE_TEMPERATURE_SENSOR)?;
+    let keys = [page_key.get(), usage_key.get()];
+    let values = [num_page.get(), num_usage.get()];
+    // SAFETY: single FFI call; callbacks are address-only globals, never
+    // dereferenced (size/layout irrelevant).
+    let p = unsafe {
+        CFDictionaryCreate(
+            std::ptr::null(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            2,
+            std::ptr::addr_of!(kCFTypeDictionaryKeyCallBacks) as *const c_void,
+            std::ptr::addr_of!(kCFTypeDictionaryValueCallBacks) as *const c_void,
+        )
+    };
+    Cf::new(p)
+}
+
+fn hid_client() -> Option<Cf> {
+    // SAFETY: single FFI call; null-checked via Cf::new before any use.
+    let p = unsafe { IOHIDEventSystemClientCreate(std::ptr::null()) as *const c_void };
+    Cf::new(p)
+}
+
+fn hid_set_matching(client: &Cf, matching: &Cf) {
+    // SAFETY: single FFI call on live client + dict handles.
+    unsafe {
+        IOHIDEventSystemClientSetMatching(client.get() as *mut c_void, matching.get());
+    }
+}
+
+fn hid_services(client: &Cf) -> Option<Cf> {
+    // SAFETY: single FFI call; null-checked via Cf::new before any use.
+    let p = unsafe { IOHIDEventSystemClientCopyServices(client.get() as *mut c_void) };
+    Cf::new(p)
+}
+
+fn services_count(services: &Cf) -> isize {
+    // SAFETY: single FFI call on a live CFArray handle.
+    unsafe { CFArrayGetCount(services.get()) }
+}
+
+fn service_at(services: &Cf, idx: isize) -> *const c_void {
+    // SAFETY: single FFI call on a live CFArray handle; result may be null.
+    unsafe { CFArrayGetValueAtIndex(services.get(), idx) }
+}
+
+fn service_product(sc: *const c_void) -> Option<String> {
+    let key = cf_string(c"Product")?;
+    // SAFETY: single FFI call; null-checked via Cf::new. Borrowed `sc` is
+    // array-owned (never wrapped in Cf, never released — cpp:119).
+    let name = Cf::new(unsafe { IOHIDServiceClientCopyProperty(sc, key.get()) })?;
+    let mut buf = [0 as c_char; 200];
+    // SAFETY: single FFI call; C++ uses kCFStringEncodingASCII (sensors.cpp:124).
+    let ok = unsafe {
+        CFStringGetCString(
+            name.get(),
+            buf.as_mut_ptr(),
+            buf.len() as isize,
+            K_CF_STR_ASCII,
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let bytes: Vec<u8> = buf[..len].iter().map(|&c| c as u8).collect();
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn service_temp(sc: *const c_void) -> Option<f64> {
+    // SAFETY: single FFI call; null-checked via Cf::new before any use.
+    let event =
+        Cf::new(unsafe { IOHIDServiceClientCopyEvent(sc, HID_EVENT_TYPE_TEMPERATURE, 0, 0) })?;
+    // SAFETY: single FFI call on a live event handle.
+    let temp = unsafe { IOHIDEventGetFloatValue(event.get(), HID_EVENT_FIELD_TEMPERATURE) };
+    Some(temp)
+}
+
 impl RealBackend {
     /// Enumerate thermal services (0xff00,5) → (Product name, temp).
     /// Mirrors sensors.cpp:104-151. Keeps only 0 < temp < 150 (cpp:132).
     /// Never Err — failure yields empty vec.
-    fn hid_thermal_sensors(&mut self) -> Vec<(String, f64)> {
+    fn hid_thermal_sensors(&self) -> Vec<(String, f64)> {
         let mut out = Vec::new();
-        // SAFETY: every unsafe block below performs a single FFI call whose
-        // return is null-checked (via Cf::new) before any use; opaque handles
-        // are *mut c_void (simpler than struct decls; same address semantics).
-        unsafe {
-            let alloc: *const c_void = std::ptr::null();
-            let page_key = match Cf::new(CFStringCreateWithCString(
-                alloc,
-                c"PrimaryUsagePage".as_ptr(),
-                K_CF_STR_UTF8,
-            )) {
-                Some(k) => k,
-                None => return out,
-            };
-            let usage_key = match Cf::new(CFStringCreateWithCString(
-                alloc,
-                c"PrimaryUsage".as_ptr(),
-                K_CF_STR_UTF8,
-            )) {
-                Some(k) => k,
-                None => return out,
-            };
-            let product_key = match Cf::new(CFStringCreateWithCString(
-                alloc,
-                c"Product".as_ptr(),
-                K_CF_STR_UTF8,
-            )) {
-                Some(k) => k,
-                None => return out,
-            };
-            let page = HID_PAGE_APPLE_VENDOR;
-            let usage = HID_USAGE_TEMPERATURE_SENSOR;
-            let num_page = match Cf::new(CFNumberCreate(
-                alloc,
-                K_CF_NUMBER_SINT32,
-                &page as *const i32 as *const c_void,
-            )) {
+        let matching = match matching_dict() {
+            Some(d) => d,
+            None => return out,
+        };
+        let client = match hid_client() {
+            Some(c) => c,
+            None => return out,
+        };
+        hid_set_matching(&client, &matching);
+        let services = match hid_services(&client) {
+            Some(s) => s,
+            None => return out,
+        };
+        for i in 0..services_count(&services) {
+            // Borrowed (array-owned) — never wrapped in Cf, never released (cpp:119).
+            let sc = service_at(&services, i);
+            if sc.is_null() {
+                continue;
+            }
+            let product = match service_product(sc) {
                 Some(n) => n,
-                None => return out,
+                None => continue,
             };
-            let num_usage = match Cf::new(CFNumberCreate(
-                alloc,
-                K_CF_NUMBER_SINT32,
-                &usage as *const i32 as *const c_void,
-            )) {
-                Some(n) => n,
-                None => return out,
+            let temp = match service_temp(sc) {
+                Some(t) => t,
+                None => continue,
             };
-            // Matching dict built exactly like sensors.cpp:53-66.
-            let keys = [page_key.get(), usage_key.get()];
-            let values = [num_page.get(), num_usage.get()];
-            let matching = match Cf::new(CFDictionaryCreate(
-                alloc,
-                keys.as_ptr(),
-                values.as_ptr(),
-                2,
-                std::ptr::addr_of!(kCFTypeDictionaryKeyCallBacks) as *const c_void,
-                std::ptr::addr_of!(kCFTypeDictionaryValueCallBacks) as *const c_void,
-            )) {
-                Some(d) => d,
-                None => return out,
-            };
-            let client = match Cf::new(IOHIDEventSystemClientCreate(alloc) as *const c_void) {
-                Some(c) => c,
-                None => return out,
-            };
-            IOHIDEventSystemClientSetMatching(client.get() as *mut c_void, matching.get());
-            let services = match Cf::new(IOHIDEventSystemClientCopyServices(
-                client.get() as *mut c_void
-            )) {
-                Some(s) => s,
-                None => return out,
-            };
-            let count = CFArrayGetCount(services.get());
-            let mut buf = [0 as c_char; 200];
-            for i in 0..count {
-                // Borrowed (array-owned) — never wrapped in Cf, never released (cpp:119).
-                let sc = CFArrayGetValueAtIndex(services.get(), i);
-                if sc.is_null() {
-                    continue;
-                }
-                let name = match Cf::new(IOHIDServiceClientCopyProperty(sc, product_key.get())) {
-                    Some(n) => n,
-                    None => continue,
-                };
-                // C++ uses kCFStringEncodingASCII here (sensors.cpp:124).
-                if CFStringGetCString(
-                    name.get(),
-                    buf.as_mut_ptr(),
-                    buf.len() as isize,
-                    K_CF_STR_ASCII,
-                ) == 0
-                {
-                    continue;
-                }
-                let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-                let bytes: Vec<u8> = buf[..len].iter().map(|&c| c as u8).collect();
-                let product = String::from_utf8_lossy(&bytes).into_owned();
-                let event = match Cf::new(IOHIDServiceClientCopyEvent(
-                    sc,
-                    HID_EVENT_TYPE_TEMPERATURE,
-                    0,
-                    0,
-                )) {
-                    Some(e) => e,
-                    None => continue,
-                };
-                let temp = IOHIDEventGetFloatValue(event.get(), HID_EVENT_FIELD_TEMPERATURE);
-                if temp > 0.0 && temp < 150.0 {
-                    out.push((product, temp));
-                }
+            if temp > 0.0 && temp < 150.0 {
+                out.push((product, temp));
             }
         }
         out
@@ -712,7 +730,7 @@ mod tests {
         assert_eq!(basename_of(b"launchd"), "launchd");
     }
 
-    // M2h(a) TDD red: select_core_temps does not exist yet.
+    // M2h(a) selection helpers over (Product, temp) entries.
     fn entries(pairs: &[(&str, f64)]) -> Vec<(String, f64)> {
         pairs.iter().map(|(n, t)| (n.to_string(), *t)).collect()
     }
