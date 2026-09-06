@@ -1,0 +1,8 @@
+[package]
+name = "btop-draw"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+btop-tools = { path = "../btop-tools" }
+btop-config = { path = "../btop-config" }

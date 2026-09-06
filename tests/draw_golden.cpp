@@ -87,7 +87,12 @@ void setup(int w, int h, const string& boxes) {
 	// Pinned machine description (normally filled by collect()).
 	Shared::coreCount = 8;
 	Cpu::cpuName = "Golden Test CPU 8-Core";
-	Cpu::cpuHz.clear();
+	Cpu::cpuHz.clear(); // NOTE (hasCpuHz trap): btop_draw.cpp:2366 declares
+	// `static const bool hasCpuHz = not Cpu::get_cpuHz().empty()`, initialized
+	// ONCE on the first Cpu::draw call. Clearing cpuHz before the first draw
+	// pins hasCpuHz=false process-wide; any future scenario that populates
+	// cpuHz AFTER the first draw would still silently observe false. Keep this
+	// clear-first ordering (with show_cpu_freq=false above) for determinism.
 	Cpu::available_fields = {"Auto", "total"};
 	Cpu::got_sensors = true;
 	Cpu::cpu_temp_only = false;
