@@ -1,4 +1,3 @@
-#![allow(dead_code)] // M2g removes this if clippy stays clean; see plan header.
 use crate::gpu::EnergyUnit;
 use crate::types::CollectError;
 use std::collections::VecDeque;
@@ -24,8 +23,12 @@ pub trait MacOsBackend {
     fn if_counters(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError>;
     fn proc_list(&mut self) -> Result<Vec<ProcRaw>, CollectError>;
     /// AppleSi-only; Intel returns Unsupported. Returns (name, residency, freq_hz).
+    /// AppleSi-only; Intel returns Unsupported.
+    /// Returns (name, residency, freq_hz).
     fn gpu_residency(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError>;
+    /// Returns (raw_value, unit). AppleSi-only; Intel returns Unsupported.
     fn gpu_energy(&mut self) -> Result<(u64, EnergyUnit), CollectError>;
+    /// Returns Celsius readings. AppleSi-only; Intel returns Unsupported.
     fn hid_temps(&mut self) -> Result<Vec<f64>, CollectError>;
 }
 
@@ -97,7 +100,10 @@ impl MacOsBackend for ReplayBackend {
         Ok(self.gpu_residency_q.pop_front().unwrap_or_default())
     }
     fn gpu_energy(&mut self) -> Result<(u64, EnergyUnit), CollectError> {
-        Ok(self.gpu_energy_q.pop_front().unwrap_or((0, EnergyUnit::Nano)))
+        Ok(self
+            .gpu_energy_q
+            .pop_front()
+            .unwrap_or((0, EnergyUnit::Nano)))
     }
     fn hid_temps(&mut self) -> Result<Vec<f64>, CollectError> {
         Ok(self.hid_temps_q.pop_front().unwrap_or_default())

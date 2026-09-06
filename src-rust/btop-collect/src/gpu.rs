@@ -16,7 +16,7 @@ pub fn gpu_util(states: &[(String, u64)]) -> i64 {
     if total == 0 {
         return 0;
     }
-    (active as f64 * 100.0 / total as f64).round() as i64
+    ((active as f64 * 100.0 / total as f64).round() as i64).clamp(0, 100)
 }
 
 /// Weighted clock: Σ(res*freq)/active. Mirrors cpp:512-514.
@@ -32,7 +32,7 @@ pub fn gpu_clock(states: &[(String, u64, u64)]) -> u64 {
     if active == 0 {
         return 0;
     }
-    num / active
+    (num as f64 / active as f64).round() as u64
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -57,7 +57,16 @@ pub fn power_mw(value: u64, unit: EnergyUnit, dt_ms: u64) -> u64 {
 
 /// Mirrors cpp:569-579.
 #[allow(clippy::too_many_arguments)]
-pub fn vram_used(act: u64, inact: u64, wire: u64, spec: u64, compr: u64, purge: u64, ext: u64, page: u64) -> u64 {
+pub fn vram_used(
+    act: u64,
+    inact: u64,
+    wire: u64,
+    spec: u64,
+    compr: u64,
+    purge: u64,
+    ext: u64,
+    page: u64,
+) -> u64 {
     act.saturating_add(inact)
         .saturating_add(wire)
         .saturating_add(spec)
@@ -68,6 +77,7 @@ pub fn vram_used(act: u64, inact: u64, wire: u64, spec: u64, compr: u64, purge: 
 }
 
 /// Mean rounded. Mirrors sensors.cpp:93-96 (`round(sum/size)`).
+// NOTE: C++ sensors.cpp:93-95 accumulates into 0ll (per-element truncation + integer division); this port implements ideal round(sum/size) — more correct, same result on realistic temps.
 pub fn sensor_avg(temps: &[f64]) -> i64 {
     if temps.is_empty() {
         return 0;
@@ -82,10 +92,7 @@ mod tests {
     #[test]
     fn gpu_util_skips_idle_states() {
         // residencies: IDLE=700, ACTIVE=300 => 30.
-        let states = vec![
-            ("IDLE".to_string(), 700),
-            ("ACTIVE".to_string(), 300),
-        ];
+        let states = vec![("IDLE".to_string(), 700), ("ACTIVE".to_string(), 300)];
         assert_eq!(gpu_util(&states), 30);
         assert_eq!(gpu_util(&[]), 0);
     }
@@ -101,6 +108,13 @@ mod tests {
     }
 
     #[test]
+    fn gpu_clock_rounds_not_truncates() {
+        let states = vec![("A".to_string(), 1u64, 2u64), ("B".to_string(), 1u64, 3u64)];
+        // (2+3)/2 = 2.5 -> 3 (C++ round, cpp:514), truncation would give 2.
+        assert_eq!(gpu_clock(&states), 3);
+    }
+
+    #[test]
     fn gpu_power_converts_units() {
         // 2_000_000 nJ over 1000ms = 0.002J/1s = 2mW.
         assert_eq!(power_mw(2_000_000, EnergyUnit::Nano, 1000), 2);
@@ -112,7 +126,10 @@ mod tests {
     #[test]
     fn vram_used_sums_named_counters() {
         // used=(act+inact+wire+spec+compr-purge-ext)*page; mirrors cpp:569-579.
-        assert_eq!(vram_used(10, 5, 3, 1, 1, 2, 0, 4096), (10 + 5 + 3 + 1 + 1 - 2 - 0) * 4096);
+        assert_eq!(
+            vram_used(10, 5, 3, 1, 1, 2, 0, 4096),
+            (10 + 5 + 3 + 1 + 1 - 2 - 0) * 4096
+        );
     }
 
     #[test]
