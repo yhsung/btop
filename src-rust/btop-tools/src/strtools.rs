@@ -53,7 +53,7 @@ pub fn ljust(s: &str, x: usize, limit: bool) -> String {
         return s.chars().take(x).collect();
     }
     let mut out = s.to_string();
-    out.extend(std::iter::repeat(' ').take(x.saturating_sub(len)));
+    out.extend(std::iter::repeat_n(' ', x.saturating_sub(len)));
     out
 }
 
