@@ -1,4 +1,5 @@
 //! Net math mirroring btop_collect.cpp:1551-1563.
+
 /// Update one direction counter.
 /// Returns `(speed_Bps, total_bytes, rollover)` for `(val, last, rollover, offset, dt_ms)` inputs.
 /// `dt_ms == 0` yields speed 0 (C++ would divide by zero).

@@ -1,4 +1,5 @@
 #![allow(dead_code)] // M2g removes this if clippy stays clean; see plan header.
+use crate::gpu::EnergyUnit;
 use crate::types::CollectError;
 use std::collections::VecDeque;
 
@@ -22,6 +23,10 @@ pub trait MacOsBackend {
     /// Returns (iface_name, ibytes, obytes) per interface.
     fn if_counters(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError>;
     fn proc_list(&mut self) -> Result<Vec<ProcRaw>, CollectError>;
+    /// AppleSi-only; Intel returns Unsupported. Returns (name, residency, freq_hz).
+    fn gpu_residency(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError>;
+    fn gpu_energy(&mut self) -> Result<(u64, EnergyUnit), CollectError>;
+    fn hid_temps(&mut self) -> Result<Vec<f64>, CollectError>;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -37,7 +42,8 @@ pub struct ProcRaw {
 /// Empty-queue fallback per method: `cpu_ticks` → `Err(Unsupported)`,
 /// `load_avg` → `Ok([0,0,0])`, `package_temp` → `Ok(None)`, `core_temps` → `Ok(vec![])`,
 /// `vm_raw` → `Err(Unsupported)`, `swap_raw` → `Ok((0,0,0))`, `disk_raw` → `Ok((0,0,0))`,
-/// `if_counters` → `Ok(vec![])`, `proc_list` → `Ok(vec![])`.
+/// `if_counters` → `Ok(vec![])`, `proc_list` → `Ok(vec![])`,
+/// `gpu_residency` → `Ok(vec![])`, `gpu_energy` → `Ok((0, Nano))`, `hid_temps` → `Ok(vec![])`.
 /// Tasks 4–6 append their methods here with the same documented fallback.
 #[derive(Debug, Default)]
 pub struct ReplayBackend {
@@ -50,6 +56,9 @@ pub struct ReplayBackend {
     pub disk_raw_q: VecDeque<(u64, u64, u64)>,
     pub if_counters_q: VecDeque<Vec<(String, u64, u64)>>,
     pub proc_list_q: VecDeque<Vec<ProcRaw>>,
+    pub gpu_residency_q: VecDeque<Vec<(String, u64, u64)>>,
+    pub gpu_energy_q: VecDeque<(u64, EnergyUnit)>,
+    pub hid_temps_q: VecDeque<Vec<f64>>,
 }
 
 impl MacOsBackend for ReplayBackend {
@@ -83,6 +92,15 @@ impl MacOsBackend for ReplayBackend {
     }
     fn proc_list(&mut self) -> Result<Vec<ProcRaw>, CollectError> {
         Ok(self.proc_list_q.pop_front().unwrap_or_default())
+    }
+    fn gpu_residency(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError> {
+        Ok(self.gpu_residency_q.pop_front().unwrap_or_default())
+    }
+    fn gpu_energy(&mut self) -> Result<(u64, EnergyUnit), CollectError> {
+        Ok(self.gpu_energy_q.pop_front().unwrap_or((0, EnergyUnit::Nano)))
+    }
+    fn hid_temps(&mut self) -> Result<Vec<f64>, CollectError> {
+        Ok(self.hid_temps_q.pop_front().unwrap_or_default())
     }
 }
 

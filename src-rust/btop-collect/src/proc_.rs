@@ -1,7 +1,10 @@
 //! Proc math mirroring btop_collect.cpp:1876-1892, gate :1764.
 
-/// cpu_p. `factor` = machTck/clkTck (cpp:679-691, passed in, never read here).
-/// Mirrors cpp:1889 with zero-total guard (C++ divides by tick delta directly).
+/// cpu_p (PORT SCALE — see PARITY-DEBT).
+/// `factor` = machTck/clkTck from the OS (cpp:679-691), passed in rather than read from globals.
+/// PARITY-DEBT vs cpp:1889 (`round(A)*cmult/1000`, cmult per cpp:1758 `per_core ? coreCount : 1`):
+/// this port computes `round(A*100)` instead. Wiring task MUST (a) plumb `cmult`/per_core,
+/// (b) move to round-before-rescale, (c) update the 3.0 test vector. Zero-total guard stays.
 pub fn proc_cpu_percent(delta_proc: u64, delta_total: u64, factor: f64, ncore: u64) -> f64 {
     if delta_total == 0 {
         return 0.0;
