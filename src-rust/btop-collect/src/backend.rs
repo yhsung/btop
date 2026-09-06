@@ -1,5 +1,6 @@
 #![allow(dead_code)] // M2g removes this if clippy stays clean; see plan header.
 use crate::types::CollectError;
+use std::collections::VecDeque;
 
 /// Raw per-core ticks: [user, nice, system, idle]. Mirrors
 /// `processor_cpu_load_info_data_t.cpu_ticks[4]` (btop_collect.cpp:1045-1048).
@@ -10,24 +11,34 @@ pub type CpuTicks = Vec<[u64; 4]>;
 pub trait MacOsBackend {
     fn cpu_ticks(&mut self) -> Result<CpuTicks, CollectError>;
     fn load_avg(&mut self) -> Result<[f64; 3], CollectError>;
+    fn package_temp(&mut self) -> Result<Option<i64>, CollectError>;
+    fn core_temps(&mut self) -> Result<Vec<i64>, CollectError>;
 }
 
-/// Deterministic replay source for tests. Fields are `Option` queues in call
+/// Deterministic replay source for tests. Fields are FIFO queues draining in call
 /// order; unneeded methods return `Unsupported` until their task fills them.
 #[derive(Debug, Default)]
 pub struct ReplayBackend {
-    pub cpu_ticks_q: Vec<CpuTicks>,
-    pub load_avg_q: Vec<[f64; 3]>,
+    pub cpu_ticks_q: VecDeque<CpuTicks>,
+    pub load_avg_q: VecDeque<[f64; 3]>,
+    pub package_temp_q: VecDeque<Option<i64>>,
+    pub core_temps_q: VecDeque<Vec<i64>>,
 }
 
 impl MacOsBackend for ReplayBackend {
     fn cpu_ticks(&mut self) -> Result<CpuTicks, CollectError> {
         self.cpu_ticks_q
-            .pop()
+            .pop_front()
             .ok_or(CollectError::Unsupported("cpu_ticks queue empty"))
     }
     fn load_avg(&mut self) -> Result<[f64; 3], CollectError> {
-        Ok(self.load_avg_q.pop().unwrap_or([0.0, 0.0, 0.0]))
+        Ok(self.load_avg_q.pop_front().unwrap_or([0.0, 0.0, 0.0]))
+    }
+    fn package_temp(&mut self) -> Result<Option<i64>, CollectError> {
+        Ok(self.package_temp_q.pop_front().flatten())
+    }
+    fn core_temps(&mut self) -> Result<Vec<i64>, CollectError> {
+        Ok(self.core_temps_q.pop_front().unwrap_or_default())
     }
 }
 
@@ -38,12 +49,18 @@ mod tests {
     #[test]
     fn replay_serves_queued_ticks_in_order() {
         let mut b = ReplayBackend {
-            cpu_ticks_q: vec![vec![[150, 10, 100, 840]]],
+            cpu_ticks_q: vec![vec![[150, 10, 100, 840]], vec![[160, 10, 100, 850]]]
+                .into_iter()
+                .collect(),
+            load_avg_q: vec![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]].into_iter().collect(),
             ..Default::default()
         };
-        // pop() takes from the END: single element is fine for order check.
-        let t = b.cpu_ticks().unwrap();
-        assert_eq!(t, vec![[150, 10, 100, 840]]);
+        // FIFO: first call returns first sample, second returns second.
+        assert_eq!(b.cpu_ticks().unwrap(), vec![[150, 10, 100, 840]]);
+        assert_eq!(b.cpu_ticks().unwrap(), vec![[160, 10, 100, 850]]);
         assert!(b.cpu_ticks().is_err());
+        assert_eq!(b.load_avg().unwrap(), [1.0, 2.0, 3.0]);
+        assert_eq!(b.load_avg().unwrap(), [4.0, 5.0, 6.0]);
+        assert_eq!(b.load_avg().unwrap(), [0.0, 0.0, 0.0]);
     }
 }
