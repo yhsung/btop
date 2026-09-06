@@ -3,7 +3,8 @@
 //! Ports `Mv` (src/btop_tools.hpp:105-126) and the `Fx` members used by
 //! src/btop_draw.cpp (`b` x73, `ub` x74, `reset` x14, `i`, `ul`/`uul`).
 //! Every escape VERIFIED, never guessed:
-//! - `Fx::e == "\x1b["` (src/btop_tools.cpp:734)
+//! - `Fx::e == "\x1b["` (src/btop_tools.cpp:734) — owned as
+//!   [`btop_tools::ESC`], re-exported here so callers have one owner.
 //! - `Mv::to(l,c) = e + l + ';' + c + 'f'`, `r/l/u/d` append `C/D/A/B`
 //!   (src/btop_tools.hpp:107-119); `save/restore = e + "s"/"u"`
 //! - `Fx::b = e + "1m"`, `ub = e + "22m"`, `i = e + "3m"`,
@@ -12,32 +13,33 @@
 //!   (src/btop_theme.cpp:40,470). Callers pass it in; the `"cpu"`-box
 //!   fixtures imply a concrete value resolved by the theme (Task 3).
 
-/// Escape sequence start (`Fx::e`).
-pub const ESC: &str = "\x1b[";
+/// Escape sequence start (`Fx::e`); single owner is [`btop_tools::ESC`].
+pub use btop_tools::ESC;
+use btop_tools::ESC as ESC_FMT;
 
 /// Move cursor to line, column (`Mv::to`).
 pub fn mv_to(line: i64, col: i64) -> String {
-    format!("\x1b[{line};{col}f")
+    format!("{ESC_FMT}{line};{col}f")
 }
 
 /// Move cursor right `x` columns (`Mv::r`).
 pub fn mv_r(x: i64) -> String {
-    format!("\x1b[{x}C")
+    format!("{ESC_FMT}{x}C")
 }
 
 /// Move cursor left `x` columns (`Mv::l`).
 pub fn mv_l(x: i64) -> String {
-    format!("\x1b[{x}D")
+    format!("{ESC_FMT}{x}D")
 }
 
 /// Move cursor up `x` lines (`Mv::u`).
 pub fn mv_u(x: i64) -> String {
-    format!("\x1b[{x}A")
+    format!("{ESC_FMT}{x}A")
 }
 
 /// Move cursor down `x` lines (`Mv::d`).
 pub fn mv_d(x: i64) -> String {
-    format!("\x1b[{x}B")
+    format!("{ESC_FMT}{x}B")
 }
 
 /// Save cursor position (`Mv::save`).

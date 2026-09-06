@@ -34,6 +34,10 @@ pub fn meter(
     value: i64,
     invert: bool,
 ) -> String {
+    debug_assert!(
+        gradient.len() >= 101,
+        "meter gradient must hold 101 entries"
+    );
     if width < 1 {
         return String::new();
     }
@@ -76,29 +80,48 @@ pub struct Graph {
     out: String,
 }
 
+/// Options for [`Graph::new`]. Field order matches the old positional
+/// params (`width, height, gradient, symbol, invert, no_zero, max_value,
+/// offset`); `gradient` is owned (callers clone the 101-entry gradient).
+#[derive(Debug, Clone)]
+pub struct GraphOpts {
+    pub width: usize,
+    pub height: usize,
+    pub gradient: Vec<String>,
+    pub symbol: String,
+    pub invert: bool,
+    pub no_zero: bool,
+    pub max_value: i64,
+    pub offset: i64,
+}
+
 impl Graph {
     /// Build a graph over `data`. `symbol` is the resolved base symbol
     /// (`"braille"`, `"block"`, `"tty"`); the C++ key is
     /// `<symbol>_<"down" if invert else "up">`.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        width: usize,
-        height: usize,
-        gradient: &[String],
-        reset: &str,
-        data: &[i64],
-        symbol: &str,
-        invert: bool,
-        no_zero: bool,
-        max_value: i64,
-        offset: i64,
-    ) -> Self {
+    /// `opts.gradient` must hold 101 entries (indexes 0-100), or be empty
+    /// for uncolored output.
+    pub fn new(opts: GraphOpts, reset: &str, data: &[i64]) -> Self {
+        debug_assert!(
+            opts.gradient.is_empty() || opts.gradient.len() >= 101,
+            "graph gradient must hold 101 entries"
+        );
+        let GraphOpts {
+            width,
+            height,
+            gradient,
+            symbol,
+            invert,
+            no_zero,
+            max_value,
+            offset,
+        } = opts;
         let tty_mode = symbol == "tty";
         let table_key = format!("{symbol}_{}", if invert { "down" } else { "up" });
         let mut g = Self {
             width,
             height,
-            gradient: gradient.to_vec(),
+            gradient,
             reset: reset.to_string(),
             table_key,
             invert,
@@ -279,6 +302,10 @@ impl Graph {
     /// colored cell through `m` + one glyph, blank pad, or bare glyph)
     /// then creates one new cell from the tail.
     pub fn push(&mut self, data: &[i64]) -> &str {
+        debug_assert!(
+            self.gradient.is_empty() || self.gradient.len() >= 101,
+            "graph gradient must hold 101 entries"
+        );
         if !self.tty_mode {
             self.current = !self.current;
         }

@@ -152,13 +152,18 @@ pub fn luresize(s: &str, len: usize, wide: bool) -> String {
 }
 
 /// Centered variant of [`ljust`]/[`rjust`].
-/// Mirrors Tools::cjust (src/btop_tools.cpp:378) narrow/UTF-8 path:
-/// overlong input truncated when `limit`, else left pad is ceil and right
-/// pad is floor of the remainder (extra space goes left).
-pub fn cjust(s: &str, x: usize, limit: bool) -> String {
-    let len = char_len(s);
+/// Mirrors Tools::cjust utf path (src/btop_tools.cpp:378-384): `len` is
+/// [`wide_ulen`] columns when `wide`, else Unicode scalars (C++ `ulen`
+/// byte-count for non-wide; scalar count agrees on ASCII and is the
+/// established narrow behavior of [`ljust`]/[`rjust`] in this crate);
+/// overlong input truncated via [`uresize`] when `limit`, else left pad is
+/// ceil and right pad is floor of the remainder (extra space goes left).
+/// NOTE: C++ also has a non-utf byte path (`str.size()`); this crate only
+/// ports the utf path.
+pub fn cjust(s: &str, x: usize, wide: bool, limit: bool) -> String {
+    let len = if wide { wide_ulen(s) } else { char_len(s) };
     if limit && len > x {
-        return s.chars().take(x).collect();
+        return uresize(s, x, wide);
     }
     let total = x.saturating_sub(len);
     let left = total.div_ceil(2);
@@ -169,7 +174,7 @@ pub fn cjust(s: &str, x: usize, limit: bool) -> String {
 /// Replace space runs with cursor-right escapes.
 /// Mirrors Tools::trans (src/btop_tools.cpp:394). `Mv::r(n)` was VERIFIED in
 /// src/btop_tools.hpp:110 as `Fx::e + to_string(n) + 'C'` with
-/// `Fx::e == "\x1b["`, i.e. exactly `format!("\x1b[{n}C")`.
+/// `Fx::e == "\x1b["`, i.e. exactly `format!("{ESC}{n}C")` via [`crate::ESC`].
 pub fn trans(s: &str) -> String {
     if !s.contains(' ') {
         return s.to_string();
@@ -179,11 +184,21 @@ pub fn trans(s: &str) -> String {
     while let Some(pos) = rest.find(' ') {
         out.push_str(&rest[..pos]);
         let run = rest[pos..].bytes().take_while(|&b| b == b' ').count();
-        out.push_str(&format!("\x1b[{run}C"));
+        out.push_str(&format!("{}{run}C", crate::ESC));
         rest = &rest[pos + run..];
     }
     out.push_str(rest);
     out
+}
+
+/// Options for [`floating_humanizer`]. Field order matches the old
+/// positional boolean params (`shorten, bit, per_second, base_10`).
+#[derive(Debug, Clone, Copy)]
+pub struct HumanOpts {
+    pub shorten: bool,
+    pub bit: bool,
+    pub per_second: bool,
+    pub base_10: bool,
 }
 
 /// Scale to the highest unit and suffix it.
@@ -191,17 +206,12 @@ pub fn trans(s: &str) -> String {
 /// deliberate signature change: C++ reads `Config::getB("base_10_sizes")`
 /// (plus the `base_10_bitrate` True/False/Auto override for bit+per_second)
 /// from globals; btop-tools holds no globals, so the caller passes the
-/// resolved flag as `base_10`. All arithmetic below is a line-for-line port
+/// resolved flag as `opts.base_10`. All arithmetic below is a line-for-line port
 /// (`value *= 100 * mult`, `>>= 10` or `/= 1000` stepping, digit trimming,
 /// `shorten` collapsing, `" " + unit` or single-char unit, `"ps"`/`"/s"`).
-pub fn floating_humanizer(
-    value: u64,
-    shorten: bool,
-    start: usize,
-    bit: bool,
-    per_second: bool,
-    base_10: bool,
-) -> String {
+/// `start` saturates at the last unit (11-entry tables): out-of-range input
+/// or huge u64 stepping can never index past the end.
+pub fn floating_humanizer(value: u64, start: usize, opts: HumanOpts) -> String {
     const MEBI_BIT: [&str; 11] = [
         "bit", "Kib", "Mib", "Gib", "Tib", "Pib", "Eib", "Zib", "Yib", "Rib", "Qib",
     ];
@@ -214,36 +224,37 @@ pub fn floating_humanizer(
     const MEGA_BYTE: [&str; 11] = [
         "Byte", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB", "RB", "QB",
     ];
-    let units: &[&str; 11] = if bit {
-        if base_10 {
+    let units: &[&str; 11] = if opts.bit {
+        if opts.base_10 {
             &MEGA_BIT
         } else {
             &MEBI_BIT
         }
-    } else if base_10 {
+    } else if opts.base_10 {
         &MEGA_BYTE
     } else {
         &MEBI_BYTE
     };
+    let last = units.len() - 1;
 
-    let mult: u64 = if bit { 8 } else { 1 };
+    let mult: u64 = if opts.bit { 8 } else { 1 };
     let mut value = value.wrapping_mul(100).wrapping_mul(mult);
-    let mut start = start;
+    let mut start = start.min(last);
 
-    if base_10 {
+    if opts.base_10 {
         while value >= 100_000 {
             value /= 1000;
-            start += 1;
+            start = (start + 1).min(last);
         }
     } else {
         while value >= 102_400 {
             value >>= 10;
-            start += 1;
+            start = (start + 1).min(last);
         }
     }
 
     let mut out = value.to_string();
-    if !base_10 && out.len() == 4 && start > 0 {
+    if !opts.base_10 && out.len() == 4 && start > 0 {
         out.pop();
         out.insert(2, '.');
     } else if out.len() == 3 && start > 0 {
@@ -255,7 +266,7 @@ pub fn floating_humanizer(
         out = "0".to_string();
     }
 
-    if shorten {
+    if opts.shorten {
         let has_sep = out.contains('.');
         if has_sep {
             let v: f64 = out.parse().unwrap_or(0.0);
@@ -267,7 +278,7 @@ pub fn floating_humanizer(
                 out = format!("{v:.0}");
             } else {
                 out = format!("{}.0", out.as_bytes()[0] - b'0');
-                start += 1;
+                start = (start + 1).min(last);
             }
         }
         out.push(units[start].chars().next().unwrap());
@@ -276,8 +287,8 @@ pub fn floating_humanizer(
         out.push_str(units[start]);
     }
 
-    if per_second {
-        out.push_str(if bit { "ps" } else { "/s" });
+    if opts.per_second {
+        out.push_str(if opts.bit { "ps" } else { "/s" });
     }
     out
 }
@@ -368,7 +379,18 @@ mod tests {
     // digit trim; unit suffix). NOT copied from program output.
     #[test]
     fn humanizer_bytes() {
-        let h = |v| floating_humanizer(v, false, 0, false, false, false);
+        let h = |v| {
+            floating_humanizer(
+                v,
+                0,
+                HumanOpts {
+                    shorten: false,
+                    bit: false,
+                    per_second: false,
+                    base_10: false,
+                },
+            )
+        };
         assert_eq!(h(0), "0 Byte"); // 0*100=0, 1 digit, no trim
         assert_eq!(h(50), "50 Byte"); // 5000 -> len 4, start==0 -> drop 2
         assert_eq!(h(1024), "1.00 KiB"); // 102400>>=10=100, len 3 -> 1.00
@@ -379,52 +401,83 @@ mod tests {
 
     #[test]
     fn humanizer_bit_and_per_second() {
+        let o = |shorten: bool, bit: bool, per_second: bool, base_10: bool| HumanOpts {
+            shorten,
+            bit,
+            per_second,
+            base_10,
+        };
         // 128bit: 128*800=102400 >>=10=100 -> 1.00 Kib
         assert_eq!(
-            floating_humanizer(128, false, 0, true, false, false),
+            floating_humanizer(128, 0, o(false, true, false, false)),
             "1.00 Kib"
         );
         // 1000B/s: 100000 < 102400, no shift, len 6 -> drop 2 -> 1000
         assert_eq!(
-            floating_humanizer(1000, false, 0, false, true, false),
+            floating_humanizer(1000, 0, o(false, false, true, false)),
             "1000 Byte/s"
         );
         // 1000bit/s: 800000>>10=781 -> 7.81 Kib + ps
         assert_eq!(
-            floating_humanizer(1000, false, 0, true, true, false),
+            floating_humanizer(1000, 0, o(false, true, true, false)),
             "7.81 Kibps"
         );
     }
 
     #[test]
     fn humanizer_base10_and_shorten_and_start() {
+        let o = |shorten: bool, bit: bool, per_second: bool, base_10: bool| HumanOpts {
+            shorten,
+            bit,
+            per_second,
+            base_10,
+        };
         // base10: 1000*100=100000 /=1000=100, start 1 -> 1.00 kB
         assert_eq!(
-            floating_humanizer(1000, false, 0, false, false, true),
+            floating_humanizer(1000, 0, o(false, false, false, true)),
             "1.00 kB"
         );
         assert_eq!(
-            floating_humanizer(1_000_000, false, 0, false, false, true),
+            floating_humanizer(1_000_000, 0, o(false, false, false, true)),
             "1.00 MB"
         );
         // shorten: 1MiB -> 1.00 -> {:.1} -> 1.0 + M
         assert_eq!(
-            floating_humanizer(1048576, true, 0, false, false, false),
+            floating_humanizer(1048576, 0, o(true, false, false, false)),
             "1.0M"
         );
         // shorten 4-char collapse: 12345 -> "12.0" -> {:.1}="12.0",
         // len 4 > 3 with sep -> {:.0}="12" + K
         assert_eq!(
-            floating_humanizer(12345, true, 0, false, false, false),
+            floating_humanizer(12345, 0, o(true, false, false, false)),
             "12K"
         );
         // shorten no-sep: 50 -> "50" -> 50B
-        assert_eq!(floating_humanizer(50, true, 0, false, false, false), "50B");
+        assert_eq!(
+            floating_humanizer(50, 0, o(true, false, false, false)),
+            "50B"
+        );
         // start offset: value 0 keeps start 2 -> MiB
         assert_eq!(
-            floating_humanizer(0, false, 2, false, false, false),
+            floating_humanizer(0, 2, o(false, false, false, false)),
             "0 MiB"
         );
+    }
+
+    #[test]
+    fn start_past_end_saturates() {
+        let plain = HumanOpts {
+            shorten: false,
+            bit: false,
+            per_second: false,
+            base_10: false,
+        };
+        assert_eq!(
+            floating_humanizer(1, 999, plain),
+            floating_humanizer(1, 10, plain)
+        );
+        // Huge values step without indexing past the last unit.
+        assert_eq!(floating_humanizer(u64::MAX, 0, plain), "163 PiB");
     }
 
     #[test]
@@ -442,10 +495,20 @@ mod tests {
 
     #[test]
     fn centers_like_justifiers() {
-        assert_eq!(cjust("ab", 6, false), "  ab  "); // ceil left, floor right
-        assert_eq!(cjust("ab", 5, false), "  ab "); // extra space goes left
-        assert_eq!(cjust("abcdef", 4, true), "abcd");
-        assert_eq!(cjust("ab", 6, true), "  ab  ");
+        assert_eq!(cjust("ab", 6, false, false), "  ab  "); // ceil left, floor right
+        assert_eq!(cjust("ab", 5, false, false), "  ab "); // extra space goes left
+        assert_eq!(cjust("abcdef", 4, false, true), "abcd");
+        assert_eq!(cjust("ab", 6, false, true), "  ab  ");
+    }
+
+    #[test]
+    fn cjust_wide_counts_columns() {
+        // "a中" is 1 + 2 = 3 columns: total 3, left ceil = 2, right floor = 1.
+        assert_eq!(cjust("a中", 6, true, false), "  a中 ");
+        // Narrow counts scalars (2), so padding differs.
+        assert_eq!(cjust("a中", 6, false, false), "  a中  ");
+        // Overlong wide input truncates by columns.
+        assert_eq!(cjust("a中bcd", 3, true, true), "a中");
     }
 
     #[test]
