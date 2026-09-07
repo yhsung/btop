@@ -341,7 +341,7 @@ fn layout_dump(l: &Layout) -> String {
 // supports_watts=false). Geometry = LayoutInput::defaults(w,h) cpu part.
 // Theme = Default, tty=false, lowcolor=false, theme_background=true.
 
-use btop_draw::cpu::{draw_cpu, CpuDrawInput, CpuFlags};
+use btop_draw::cpu::{draw_cpu, BatteryState, CpuDrawInput, CpuFlags};
 use std::collections::{HashMap, VecDeque};
 
 fn fixed_cpu_percent() -> HashMap<String, VecDeque<i64>> {
@@ -413,9 +413,9 @@ fn cpu_test_input<'a>(
         available_fields: available,
         graph_symbol_cfg: "braille",
         graph_symbol_cpu_cfg: "default",
-        temp_scale: "celsius",
         flags: CpuFlags::harness_defaults(),
         battery: None,
+        uptime_secs: 0,
         term_width: 100,
         force_redraw: true,
         data_same: false,
@@ -461,6 +461,107 @@ fn cpu_data_same_returns_prev() {
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
     assert_eq!(draw_cpu(&input, &layout.cpu, &theme), "CACHED");
+}
+
+// ── Fix 3: smoke tests for the previously no-op branches ─────────────────
+// Each branch below had a `let _ = ...` body; now it runs transcribed code.
+// No byte fixtures exist for these configs, so each test asserts non-panic
+// plus ONE structural property — never byte equality.
+
+#[test]
+fn cpu_smoke_battery() {
+    let percent = fixed_cpu_percent();
+    let cores = fixed_cpu_cores();
+    let temp = fixed_cpu_temp();
+    let mut input = cpu_test_input(&percent, &cores, &temp);
+    input.flags.show_battery_cfg = true;
+    input.flags.has_battery = true;
+    input.flags.show_battery_watts = true;
+    input.battery = Some(BatteryState {
+        percent: 85,
+        watts: 12.5,
+        seconds: 3660,
+        status: "discharging".to_string(),
+    });
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = draw_cpu(&input, &layout.cpu, &theme);
+    assert!(out.contains("BAT"), "battery title missing");
+    assert!(out.contains("85%"), "battery percent missing");
+}
+
+#[test]
+fn cpu_smoke_watts() {
+    let percent = fixed_cpu_percent();
+    let cores = fixed_cpu_cores();
+    let temp = fixed_cpu_temp();
+    let mut input = cpu_test_input(&percent, &cores, &temp);
+    input.flags.show_watts_cfg = true;
+    input.flags.supports_watts = true;
+    input.usage_watts = 65.5;
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = draw_cpu(&input, &layout.cpu, &theme);
+    assert!(out.contains('W'), "watts suffix missing");
+}
+
+#[test]
+fn cpu_smoke_freq() {
+    let percent = fixed_cpu_percent();
+    let cores = fixed_cpu_cores();
+    let temp = fixed_cpu_temp();
+    let mut input = cpu_test_input(&percent, &cores, &temp);
+    input.flags.show_freq_cfg = true;
+    input.flags.has_cpu_hz = true;
+    input.cpu_hz = "3.40GHz";
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = draw_cpu(&input, &layout.cpu, &theme);
+    assert!(out.contains("GHz"), "cpu freq readout missing");
+}
+
+#[test]
+fn cpu_smoke_uptime() {
+    let percent = fixed_cpu_percent();
+    let cores = fixed_cpu_cores();
+    let temp = fixed_cpu_temp();
+    let mut input = cpu_test_input(&percent, &cores, &temp);
+    input.flags.show_uptime = true;
+    input.uptime_secs = 3661;
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = draw_cpu(&input, &layout.cpu, &theme);
+    assert!(out.contains("up"), "uptime readout missing");
+}
+
+#[test]
+fn cpu_smoke_container() {
+    let percent = fixed_cpu_percent();
+    let cores = fixed_cpu_cores();
+    let temp = fixed_cpu_temp();
+    let mut input = cpu_test_input(&percent, &cores, &temp);
+    input.container_engine = Some("docker");
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = draw_cpu(&input, &layout.cpu, &theme);
+    assert!(out.contains("docker"), "container engine name missing");
+}
+
+#[test]
+fn cpu_smoke_gpu_brief_omitted() {
+    // The :975-1021 brief needs per-GPU data the stateless input does not
+    // carry, so the branch was deleted (not stubbed): show_gpu=true must
+    // still render the full box without panic.
+    let percent = fixed_cpu_percent();
+    let cores = fixed_cpu_cores();
+    let temp = fixed_cpu_temp();
+    let mut input = cpu_test_input(&percent, &cores, &temp);
+    input.flags.show_gpu = true;
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = draw_cpu(&input, &layout.cpu, &theme);
+    assert!(!out.is_empty(), "gpu-flagged draw is empty");
+    assert!(out.contains("CPU "), "meter line missing");
 }
 #[test]
 fn byte_parity_calcSizes_S0() {

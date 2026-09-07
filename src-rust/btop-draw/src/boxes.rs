@@ -15,6 +15,41 @@ use crate::symbols::SUPERSCRIPT;
 use btop_config::theme::{dec_to_color, hex_to_color};
 use btop_tools::strtools::uresize;
 
+// ── CommonFlags ─────────────────────────────────────────────────────────────
+
+/// Flags shared by every box draw. Task 5+ (mem/net/proc/gpu) embed this
+/// same struct instead of re-declaring the fields per box — that is the 4×
+/// duplication this stops.
+///
+/// Lives in boxes.rs (not lib.rs) because `create_box` / `banner_gen` /
+/// `render_clock` already thread exactly these theme/mode knobs as params;
+/// this struct is their future grouped form. `temp_scale` is
+/// box-independent but shared by every temp-rendering box, so it rides
+/// along rather than staying a per-box string.
+#[derive(Debug, Clone)]
+pub struct CommonFlags {
+    pub tty_mode: bool,         // Config tty_mode (:599, createBox :289)
+    pub rounded: bool,          // Config rounded_corners (createBox :289)
+    pub lowcolor: bool,         // Config lowcolor (Theme depth :146)
+    pub theme_background: bool, // Config theme_background (color() :133)
+    pub temp_scale: String,      // Config temp_scale (:602)
+}
+
+impl CommonFlags {
+    /// Harness defaults (tests/draw_golden.cpp setup() + btop_config.cpp
+    /// compiled-in defaults): tty off, rounded on, full color, themed
+    /// background, celsius.
+    pub fn harness_defaults() -> Self {
+        Self {
+            tty_mode: false,
+            rounded: true,
+            lowcolor: false,
+            theme_background: true,
+            temp_scale: "celsius".to_string(),
+        }
+    }
+}
+
 // ── createBox ─────────────────────────────────────────────────────────────
 
 /// Outline box, porting `Draw::createBox` (src/btop_draw.cpp:279-331).
