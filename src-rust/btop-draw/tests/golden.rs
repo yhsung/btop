@@ -563,6 +563,290 @@ fn cpu_smoke_gpu_brief_omitted() {
     assert!(!out.is_empty(), "gpu-flagged draw is empty");
     assert!(out.contains("CPU "), "meter line missing");
 }
+// ── Task 6 byte parity: gpu box ──────────────────────────────────────────
+// Harness (tests/draw_golden.cpp:289-308 fixed_gpu + :389-398): Gpu::draw
+// at S0 (100x30) and S1 (160x48) under OWN size passes
+// (setup(w,h,"gpu0") with Gpu::count=1, names={"Golden GPU"}, offsets={7}).
+// Geometry = LayoutInput::defaults(w,h) + shown_boxes="gpu0" + one
+// GpuPanel{panel:0, b_offset:7}. All supported_functions default true, so
+// every section renders; pwr_state is pinned to 8 (pwr_state=8 pin).
+// Theme = Default, tty=false, lowcolor=false, theme_background=true,
+// graph_symbol_gpu="default" → "braille", gpu_mirror_graph=true (mirrored),
+// cpu_invert_lower=true, check_temp=true.
+
+use btop_draw::boxes::{GpuGeom, GpuPanel};
+use btop_draw::gpu::{draw_gpu, GpuDrawInput, GpuFlags, GpuSupported};
+
+fn gpu_layout(w: usize, h: usize) -> GpuGeom {
+    let mut li = LayoutInput::defaults(w, h);
+    li.shown_boxes = "gpu0".to_string();
+    li.gpu_panels = vec![GpuPanel {
+        panel: 0,
+        b_offset: 7,
+    }];
+    calc_sizes(&li).gpu_panels.pop().unwrap()
+}
+
+fn fixed_gpu_percent() -> HashMap<String, Vec<i64>> {
+    [
+        (
+            "gpu-totals",
+            vec![20, 25, 30, 35, 40, 45, 50, 55, 60, 55],
+        ),
+        (
+            "gpu-vram-totals",
+            vec![40, 41, 42, 43, 44, 45, 46, 47, 48, 49],
+        ),
+        (
+            "gpu-pwr-totals",
+            vec![50, 52, 54, 56, 58, 60, 58, 56, 54, 52],
+        ),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.clone()))
+    .collect()
+}
+
+fn gpu_test_input<'a>(
+    percent: &'a HashMap<String, Vec<i64>>,
+    temp: &'a [i64],
+    mem_util: &'a [i64],
+) -> GpuDrawInput<'a> {
+    GpuDrawInput {
+        percent,
+        gpu_clock_speed: 1800,
+        pwr_usage: 125000,
+        pwr_state: 8,
+        temp,
+        temp_max: 95,
+        mem_total: 17179869184,
+        mem_used: 8589934592,
+        mem_utilization: mem_util,
+        mem_clock_speed: 8000,
+        pcie_tx: 102400,
+        pcie_rx: 204800,
+        encoder_utilization: 25,
+        decoder_utilization: 10,
+        supported: GpuSupported::all(),
+        gpu_name: "Golden GPU",
+        panel: 0,
+        graph_symbol_cfg: "braille",
+        graph_symbol_gpu_cfg: "default",
+        flags: GpuFlags::harness_defaults(),
+        force_redraw: true,
+        data_same: false,
+        prev: None,
+    }
+}
+
+#[test]
+fn byte_parity_gpu_S0() {
+    let percent = fixed_gpu_percent();
+    let temp = [55, 56, 57, 58, 59, 60];
+    let mem_util = [45, 46, 47, 48, 49, 50, 51, 52, 53, 54];
+    let input = gpu_test_input(&percent, &temp, &mem_util);
+    let theme = default_theme();
+    let out = draw_gpu(&input, &gpu_layout(100, 30), &theme);
+    assert_eq!(out.as_bytes(), fixture_bytes("gpu_S0.ans"));
+}
+
+#[test]
+fn byte_parity_gpu_S1() {
+    let percent = fixed_gpu_percent();
+    let temp = [55, 56, 57, 58, 59, 60];
+    let mem_util = [45, 46, 47, 48, 49, 50, 51, 52, 53, 54];
+    let input = gpu_test_input(&percent, &temp, &mem_util);
+    let theme = default_theme();
+    let out = draw_gpu(&input, &gpu_layout(160, 48), &theme);
+    assert_eq!(out.as_bytes(), fixture_bytes("gpu_S1.ans"));
+}
+
+#[test]
+fn gpu_data_same_returns_prev() {
+    let percent = fixed_gpu_percent();
+    let temp = [55, 56, 57, 58, 59, 60];
+    let mem_util = [45, 46, 47, 48, 49, 50, 51, 52, 53, 54];
+    let mut input = gpu_test_input(&percent, &temp, &mem_util);
+    input.data_same = true;
+    input.prev = Some("CACHED");
+    let theme = default_theme();
+    assert_eq!(draw_gpu(&input, &gpu_layout(100, 30), &theme), "CACHED");
+}
+
+#[test]
+fn gpu_smoke_no_redraw() {
+    // !force_redraw: frame (outer "gpu0" + inner "Golden GPU" boxes)
+    // omitted, values still render.
+    let percent = fixed_gpu_percent();
+    let temp = [55, 56, 57, 58, 59, 60];
+    let mem_util = [45, 46, 47, 48, 49, 50, 51, 52, 53, 54];
+    let mut input = gpu_test_input(&percent, &temp, &mem_util);
+    input.force_redraw = false;
+    let theme = default_theme();
+    let out = draw_gpu(&input, &gpu_layout(100, 30), &theme);
+    assert!(!out.contains("gpu0"), "frame should be omitted");
+    assert!(out.contains("GPU "), "meter line missing");
+    assert!(out.contains("PWR "), "pwr line missing");
+}
+
+#[test]
+fn gpu_smoke_no_temp() {
+    // temp_info=false AND check_temp=false both hide the readout
+    // (:1068/:1123); the GPU meter line still renders.
+    let percent = fixed_gpu_percent();
+    let temp = [55, 56, 57, 58, 59, 60];
+    let mem_util = [45, 46, 47, 48, 49, 50, 51, 52, 53, 54];
+    let theme = default_theme();
+    let layout = gpu_layout(100, 30);
+    let mut no_info = gpu_test_input(&percent, &temp, &mem_util);
+    no_info.supported.temp_info = false;
+    let out = draw_gpu(&no_info, &layout, &theme);
+    assert!(!out.contains("°C"), "temp readout should be hidden");
+    assert!(out.contains("GPU "), "meter line missing");
+    let mut no_check = gpu_test_input(&percent, &temp, &mem_util);
+    no_check.flags.check_temp = false;
+    let out2 = draw_gpu(&no_check, &layout, &theme);
+    assert!(!out2.contains("°C"), "temp readout should be hidden");
+    assert!(out2.contains("GPU "), "meter line missing");
+}
+
+#[test]
+fn gpu_smoke_single_graph() {
+    // gpu_mirror_graph=false: one tall graph, no lower half.
+    let percent = fixed_gpu_percent();
+    let temp = [55, 56, 57, 58, 59, 60];
+    let mem_util = [45, 46, 47, 48, 49, 50, 51, 52, 53, 54];
+    let mut input = gpu_test_input(&percent, &temp, &mem_util);
+    input.flags.mirror_graph = false;
+    let theme = default_theme();
+    let out = draw_gpu(&input, &gpu_layout(100, 30), &theme);
+    assert!(out.contains("GPU "), "meter line missing");
+    assert!(out.contains("P-state:"), "p-state line missing");
+}
+
+#[test]
+fn gpu_smoke_no_pwr_clock() {
+    // pwr_usage=false kills meter + P-state; gpu_clock=false kills title.
+    let percent = fixed_gpu_percent();
+    let temp = [55, 56, 57, 58, 59, 60];
+    let mem_util = [45, 46, 47, 48, 49, 50, 51, 52, 53, 54];
+    let mut input = gpu_test_input(&percent, &temp, &mem_util);
+    input.supported.pwr_usage = false;
+    input.supported.gpu_clock = false;
+    let theme = default_theme();
+    let out = draw_gpu(&input, &gpu_layout(100, 30), &theme);
+    assert!(!out.contains("PWR "), "pwr line should be hidden");
+    assert!(!out.contains("P-state:"), "p-state should be hidden");
+    assert!(!out.contains("1800 MHz"), "clock title should be hidden");
+    assert!(out.contains("GPU "), "meter line missing");
+}
+
+#[test]
+fn gpu_smoke_pwr_hidden_state() {
+    // pwr_state=false and pwr_state==32 (NVML_PSTATE_UNKNOWN) both hide
+    // the suffix while the PWR meter stays.
+    let percent = fixed_gpu_percent();
+    let temp = [55, 56, 57, 58, 59, 60];
+    let mem_util = [45, 46, 47, 48, 49, 50, 51, 52, 53, 54];
+    let theme = default_theme();
+    let layout = gpu_layout(100, 30);
+    let mut no_state = gpu_test_input(&percent, &temp, &mem_util);
+    no_state.supported.pwr_state = false;
+    let out = draw_gpu(&no_state, &layout, &theme);
+    assert!(!out.contains("P-state:"), "p-state should be hidden");
+    assert!(out.contains("PWR "), "pwr meter missing");
+    let mut unknown = gpu_test_input(&percent, &temp, &mem_util);
+    unknown.pwr_state = 32;
+    let out2 = draw_gpu(&unknown, &layout, &theme);
+    assert!(!out2.contains("P-state:"), "p-state 32 should be hidden");
+    assert!(out2.contains("PWR "), "pwr meter missing");
+}
+
+#[test]
+fn gpu_smoke_no_encdec() {
+    // Either gate off hides the whole ENC/DEC row (:1150).
+    let percent = fixed_gpu_percent();
+    let temp = [55, 56, 57, 58, 59, 60];
+    let mem_util = [45, 46, 47, 48, 49, 50, 51, 52, 53, 54];
+    let mut input = gpu_test_input(&percent, &temp, &mem_util);
+    input.supported.decoder_utilization = false;
+    let theme = default_theme();
+    let out = draw_gpu(&input, &gpu_layout(100, 30), &theme);
+    assert!(!out.contains("ENC "), "enc/dec row should be hidden");
+    assert!(!out.contains("DEC "), "enc/dec row should be hidden");
+    assert!(out.contains("vram"), "vram section missing");
+}
+
+#[test]
+fn gpu_smoke_vram_variants() {
+    // mem_total-only / mem_used-only take the single-count line (:1188);
+    // neither hides the section; mem_util=false and mem_clock=false drop
+    // their runs from the combined header.
+    let percent = fixed_gpu_percent();
+    let temp = [55, 56, 57, 58, 59, 60];
+    let mem_util = [45, 46, 47, 48, 49, 50, 51, 52, 53, 54];
+    let theme = default_theme();
+    let layout = gpu_layout(100, 30);
+    let mut only_total = gpu_test_input(&percent, &temp, &mem_util);
+    only_total.supported.mem_used = false;
+    let out = draw_gpu(&only_total, &layout, &theme);
+    assert!(out.contains("VRAM total:"), "single total line missing");
+    assert!(!out.contains("Utilization:"), "util graph should be hidden");
+    let mut only_used = gpu_test_input(&percent, &temp, &mem_util);
+    only_used.supported.mem_total = false;
+    let out2 = draw_gpu(&only_used, &layout, &theme);
+    assert!(out2.contains("VRAM usage:"), "single usage line missing");
+    assert!(out2.contains("VRAM clock:"), "single-line mem clock missing");
+    let mut neither = gpu_test_input(&percent, &temp, &mem_util);
+    neither.supported.mem_total = false;
+    neither.supported.mem_used = false;
+    let out3 = draw_gpu(&neither, &layout, &theme);
+    assert!(!out3.contains("vram"), "vram section should be hidden");
+    assert!(!out3.contains("VRAM"), "vram lines should be hidden");
+    let mut no_sub = gpu_test_input(&percent, &temp, &mem_util);
+    no_sub.supported.mem_utilization = false;
+    no_sub.supported.mem_clock = false;
+    let out4 = draw_gpu(&no_sub, &layout, &theme);
+    assert!(out4.contains("vram"), "vram header missing");
+    assert!(!out4.contains("Utilization:"), "util should be hidden");
+    assert!(!out4.contains("8000 MHz"), "mem clock should be hidden");
+}
+
+#[test]
+fn gpu_smoke_no_pcie() {
+    // pcie_txrx=false and negative tx (manually disabled) both hide it.
+    let percent = fixed_gpu_percent();
+    let temp = [55, 56, 57, 58, 59, 60];
+    let mem_util = [45, 46, 47, 48, 49, 50, 51, 52, 53, 54];
+    let theme = default_theme();
+    let layout = gpu_layout(100, 30);
+    let mut off = gpu_test_input(&percent, &temp, &mem_util);
+    off.supported.pcie_txrx = false;
+    assert!(!draw_gpu(&off, &layout, &theme).contains("TX:"));
+    let mut neg = gpu_test_input(&percent, &temp, &mem_util);
+    neg.pcie_tx = -1;
+    assert!(!draw_gpu(&neg, &layout, &theme).contains("TX:"));
+    let full = gpu_test_input(&percent, &temp, &mem_util);
+    let out = draw_gpu(&full, &layout, &theme);
+    assert!(out.contains("TX:") && out.contains("RX:"), "pcie footer missing");
+}
+
+#[test]
+fn gpu_smoke_no_util() {
+    // gpu_utilization=false: whole graph/meter/temp/clock block gone,
+    // later sections still render.
+    let percent = fixed_gpu_percent();
+    let temp = [55, 56, 57, 58, 59, 60];
+    let mem_util = [45, 46, 47, 48, 49, 50, 51, 52, 53, 54];
+    let mut input = gpu_test_input(&percent, &temp, &mem_util);
+    input.supported.gpu_utilization = false;
+    let theme = default_theme();
+    let out = draw_gpu(&input, &gpu_layout(100, 30), &theme);
+    assert!(!out.contains("GPU "), "util block should be hidden");
+    assert!(!out.contains("1800 MHz"), "clock title should be hidden");
+    assert!(out.contains("PWR "), "pwr line missing");
+    assert!(out.contains("vram"), "vram section missing");
+}
 // ── Task 5 byte parity: mem + net boxes ──────────────────────────────────
 // Harness (tests/draw_golden.cpp:189-244 fixed_mem/fixed_net + :354-361,
 // :374-381): Mem::draw / Net::draw at S0 (100x30) and S1 (160x48) under

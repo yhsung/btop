@@ -23,10 +23,10 @@
 //! bit+per_second) is resolved by the caller into `NetFlags::base_10`.
 
 use crate::ansi::{mv_to, FX_B, FX_UB};
-use crate::boxes::{create_box, CommonFlags, NetGeom};
+use crate::boxes::{create_box, human_bytes, ljust_b, rjust_b, CommonFlags, NetGeom, Palette};
 use crate::meter_graph::{Graph, GraphOpts};
-use crate::theme_grad::{color, gradient};
-use btop_tools::strtools::{floating_humanizer, ljust, rjust, uresize, HumanOpts};
+use crate::theme_grad::gradient;
+use btop_tools::strtools::{floating_humanizer, uresize, HumanOpts};
 use std::collections::HashMap;
 
 /// One direction's counters, mirroring `Net::net_stat`
@@ -98,27 +98,10 @@ pub struct NetDrawInput<'a> {
     pub prev: Option<&'a str>, // cached out for data_same
 }
 
-/// `rjust`/`ljust` with C++ defaults (`utf=false, wide=false,
-/// limit=true`, src/btop_tools.cpp:346-376): byte sizes, truncate overlong.
-/// Every just input in net draw is humanizer/number/iface ASCII, where byte
-/// length == scalar count, so the shared scalar helpers agree.
-fn rjust_b(s: &str, x: usize) -> String {
-    rjust(s, x, true)
-}
-
-fn ljust_b(s: &str, x: usize) -> String {
-    ljust(s, x, true)
-}
-
-/// Resolved palette for one draw call (`Theme::c` under the caller flags).
-struct Palette {
-    net_box: String,
-    main_fg: String,
-    title: String,
-    hi_fg: String,
-    graph_text: String,
-    reset: String,
-}
+// (Shared just/humanizer/Palette helpers live in boxes.rs — Step 0 dedupe.
+// Net's bit/per_second humanizer calls stay explicit: mem's `human_bytes`
+// shape only covers bit=false/per_second=false, which is just the max-label
+// call below.)
 
 /// Draw the net box. `geom` is the net part of `Layout` (calcSizes);
 /// `theme` is the Default-keyed map (`default_theme()`).
@@ -131,21 +114,7 @@ pub fn draw_net(input: &NetDrawInput, geom: &NetGeom, theme: &HashMap<String, St
     let lowcolor = f.common.lowcolor;
     let tbg = f.common.theme_background;
 
-    let pal = Palette {
-        net_box: color("net_box", theme, lowcolor, tbg),
-        main_fg: color("main_fg", theme, lowcolor, tbg),
-        title: color("title", theme, lowcolor, tbg),
-        hi_fg: color("hi_fg", theme, lowcolor, tbg),
-        graph_text: color("graph_text", theme, lowcolor, tbg),
-        reset: format!(
-            "{}{}{}",
-            "\x1b[0m",
-            color("main_fg", theme, lowcolor, tbg),
-            color("main_bg", theme, lowcolor, tbg),
-        ),
-    };
-    // Inner-box line color: C++ passes "" → Theme::c("div_line") (:2527).
-    let div_line = color("div_line", theme, lowcolor, tbg);
+    let pal = Palette::new("net_box", theme, lowcolor, tbg);
 
     // Symbol resolution (:1506 + Graph ctor :498-501).
     let base_symbol: &str = if f.common.tty_mode || input.graph_symbol_net_cfg == "tty" {
@@ -162,13 +131,13 @@ pub fn draw_net(input: &NetDrawInput, geom: &NetGeom, theme: &HashMap<String, St
     // Title glyphs (:1514-1515; note the embedded Fx::ub).
     let title_left = format!(
         "{}{}{}",
-        pal.net_box,
+        pal.box_color,
         FX_UB,
         crate::symbols::box_chars::TITLE_LEFT
     );
     let title_right = format!(
         "{}{}{}",
-        pal.net_box,
+        pal.box_color,
         FX_UB,
         crate::symbols::box_chars::TITLE_RIGHT
     );
@@ -197,7 +166,7 @@ pub fn draw_net(input: &NetDrawInput, geom: &NetGeom, theme: &HashMap<String, St
     let i_size = (input.selected_iface.len() as i64).min(15);
 
     let mut out = String::new();
-    // NOTE: render_frame's inner create_box needs div_line, not net_box.
+    // NOTE: the inner create_box needs div_line, not box_color.
     // Rebuild the frame here instead of delegating the inner box color.
     let frame = if input.force_redraw || ip_changed {
         let mut fr = String::new();
@@ -206,12 +175,12 @@ pub fn draw_net(input: &NetDrawInput, geom: &NetGeom, theme: &HashMap<String, St
             y,
             width,
             height,
-            &pal.net_box,
+            &pal.box_color,
             true,
             "net",
             "",
             3,
-            &div_line,
+            &pal.div_line,
             &pal.hi_fg,
             &pal.title,
             &pal.reset,
@@ -233,7 +202,7 @@ pub fn draw_net(input: &NetDrawInput, geom: &NetGeom, theme: &HashMap<String, St
             up_title,
             down_title,
             0,
-            &div_line,
+            &pal.div_line,
             &pal.hi_fg,
             &pal.title,
             &pal.reset,
@@ -351,15 +320,10 @@ pub fn draw_net(input: &NetDrawInput, geom: &NetGeom, theme: &HashMap<String, St
         );
         out += FX_UB;
         out += &pal.graph_text;
-        out += &floating_humanizer(
+        out += &human_bytes(
             if dir == "upload" { up_max } else { down_max },
-            0,
-            HumanOpts {
-                shorten: true,
-                bit: false,
-                per_second: false,
-                base_10: f.base_10,
-            },
+            true,
+            f.base_10,
         );
         let stat = input.stat.get(dir);
         let speed = floating_humanizer(
@@ -396,16 +360,7 @@ pub fn draw_net(input: &NetDrawInput, geom: &NetGeom, theme: &HashMap<String, St
                 base_10: f.base_10,
             },
         ); // :1577
-        let total = floating_humanizer(
-            stat.map(|s| s.total).unwrap_or(0),
-            0,
-            HumanOpts {
-                shorten: false,
-                bit: false,
-                per_second: false,
-                base_10: f.base_10,
-            },
-        ); // :1578
+        let total = human_bytes(stat.map(|s| s.total).unwrap_or(0), false, f.base_10); // :1578
         let symbol = if dir == "upload" { "▲" } else { "▼" }; // :1579
         if (f.swap_upload_download && dir == "upload")
             || (!f.swap_upload_download && dir == "download")

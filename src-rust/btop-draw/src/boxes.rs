@@ -12,8 +12,10 @@ use crate::symbols::box_chars::{
     V_LINE,
 };
 use crate::symbols::SUPERSCRIPT;
+use crate::theme_grad::color;
 use btop_config::theme::{dec_to_color, hex_to_color};
-use btop_tools::strtools::uresize;
+use btop_tools::strtools::{floating_humanizer, ljust, rjust, uresize, HumanOpts};
+use std::collections::HashMap;
 
 // ── CommonFlags ─────────────────────────────────────────────────────────────
 
@@ -46,6 +48,100 @@ impl CommonFlags {
             lowcolor: false,
             theme_background: true,
             temp_scale: "celsius".to_string(),
+        }
+    }
+}
+
+// ── Shared draw helpers (Step 0: deduped from cpu/mem/net) ────────────────
+
+/// `rjust`/`ljust` with C++ defaults (`utf=false, wide=false,
+/// limit=true`, src/btop_tools.cpp:346-376): byte sizes, truncate overlong.
+/// Every just input in mem/net/gpu draw is humanizer/number/title ASCII,
+/// where byte length == scalar count, so the shared scalar helpers agree.
+///
+/// NOTE: cpu.rs intentionally does NOT use these — its core/temp columns
+/// pass `limit=false` (never truncate). Unifying would change bytes.
+pub fn rjust_b(s: &str, x: usize) -> String {
+    rjust(s, x, true)
+}
+
+pub fn ljust_b(s: &str, x: usize) -> String {
+    ljust(s, x, true)
+}
+
+/// Thin wrapper over [`floating_humanizer`] for plain byte counts
+/// (`bit=false, per_second=false`; mem.rs `human()` shape, also the net
+/// max-label shape). Callers needing bit/per_second make explicit
+/// `floating_humanizer` calls.
+pub fn human_bytes(value: u64, shorten: bool, base_10: bool) -> String {
+    floating_humanizer(
+        value,
+        0,
+        HumanOpts {
+            shorten,
+            bit: false,
+            per_second: false,
+            base_10,
+        },
+    )
+}
+
+/// Celsius readout conversion, mirroring the `celsius_to` helper used by
+/// cpu/gpu draw (btop_draw.cpp). Returns `(value, unit)`.
+pub fn celsius_to(celsius: i64, scale: &str) -> (i64, &'static str) {
+    match scale {
+        "celsius" => (celsius, "°C"),
+        "fahrenheit" => ((celsius as f64 * 1.8 + 32.0).round() as i64, "°F"),
+        "kelvin" => ((celsius as f64 + 273.15).round() as i64, "K "),
+        "rankine" => ((celsius as f64 * 1.8 + 491.67).round() as i64, "°R"),
+        _ => (0, ""),
+    }
+}
+
+/// Resolved palette for one draw call (`Theme::c` under the caller flags).
+/// Union of the cpu/mem/net per-box palettes: `box_color` is the box's own
+/// key (`cpu_box`/`mem_box`/`net_box`/`gpu_box`); every other field is
+/// shared. Boxes that never read a field (e.g. net never reads
+/// `meter_bg`) simply leave it unread — one constructor, zero drift.
+#[derive(Debug, Clone)]
+pub struct Palette {
+    pub box_color: String,
+    pub div_line: String,
+    pub main_fg: String,
+    pub title: String,
+    pub hi_fg: String,
+    pub inactive: String,
+    pub meter_bg: String,
+    pub graph_text: String,
+    pub reset: String,
+}
+
+impl Palette {
+    /// Resolve every color for `box_key` (`cpu_box`, `mem_box`, `net_box`,
+    /// `gpu_box`) plus the shared keys. `reset` is `Fx::reset`
+    /// (`reset_base + main_fg + main_bg`, btop_tools.cpp:749 /
+    /// btop_theme.cpp:468).
+    pub fn new(
+        box_key: &str,
+        theme: &HashMap<String, String>,
+        lowcolor: bool,
+        theme_background: bool,
+    ) -> Self {
+        Self {
+            box_color: color(box_key, theme, lowcolor, theme_background),
+            div_line: color("div_line", theme, lowcolor, theme_background),
+            main_fg: color("main_fg", theme, lowcolor, theme_background),
+            title: color("title", theme, lowcolor, theme_background),
+            hi_fg: color("hi_fg", theme, lowcolor, theme_background),
+            inactive: color("inactive_fg", theme, lowcolor, theme_background),
+            meter_bg: color("meter_bg", theme, lowcolor, theme_background),
+            graph_text: color("graph_text", theme, lowcolor, theme_background),
+            reset: format!(
+                "{}{}{}",
+                "\x1b[0m",
+                color("main_fg", theme, lowcolor, theme_background),
+                color("main_bg", theme, lowcolor, theme_background),
+            ),
         }
     }
 }

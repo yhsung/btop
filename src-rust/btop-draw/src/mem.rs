@@ -29,11 +29,11 @@
 //!   caller into `MemFlags::base_10`.
 
 use crate::ansi::{mv_d, mv_l, mv_r, mv_to, mv_u, FX_B, FX_UB};
-use crate::boxes::{create_box, CommonFlags, MemGeom};
+use crate::boxes::{create_box, human_bytes, ljust_b, rjust_b, CommonFlags, MemGeom, Palette};
 use crate::meter_graph::{meter, Graph, GraphOpts};
 use crate::symbols::graph_table;
-use crate::theme_grad::{color, gradient};
-use btop_tools::strtools::{floating_humanizer, ljust, rjust, ssplit, trans, uresize, HumanOpts};
+use crate::theme_grad::gradient;
+use btop_tools::strtools::{ssplit, trans, uresize};
 use std::collections::HashMap;
 
 /// One disk's precomputed values, mirroring `Mem::disk_info`
@@ -130,42 +130,7 @@ fn capitalize(s: &str) -> String {
     out
 }
 
-/// `rjust`/`ljust` with C++ defaults (`utf=false, wide=false,
-/// limit=true`, src/btop_tools.cpp:346-376): byte sizes, truncate overlong.
-/// Every just input in mem/net draw is humanizer/number/title ASCII, where
-/// byte length == scalar count, so the shared scalar helpers agree.
-fn rjust_b(s: &str, x: usize) -> String {
-    rjust(s, x, true)
-}
-
-fn ljust_b(s: &str, x: usize) -> String {
-    ljust(s, x, true)
-}
-
-fn human(value: u64, shorten: bool, base_10: bool) -> String {
-    floating_humanizer(
-        value,
-        0,
-        HumanOpts {
-            shorten,
-            bit: false,
-            per_second: false,
-            base_10,
-        },
-    )
-}
-
-/// Resolved palette for one draw call (`Theme::c` under the caller flags).
-struct Palette {
-    mem_box: String,
-    div_line: String,
-    main_fg: String,
-    title: String,
-    hi_fg: String,
-    inactive: String,
-    meter_bg: String,
-    reset: String,
-}
+// (Shared just/humanizer/Palette helpers live in boxes.rs — Step 0 dedupe.)
 
 /// Outer box + disks title + divider column (calcSizes :2487-2495) plus the
 /// io title (draw :1338-1339). Returns empty when `!force_redraw`.
@@ -182,7 +147,7 @@ fn render_frame(input: &MemDrawInput, geom: &MemGeom, pal: &Palette) -> String {
         y,
         width,
         height,
-        &pal.mem_box,
+        &pal.box_color,
         true,
         "mem",
         "",
@@ -203,7 +168,7 @@ fn render_frame(input: &MemDrawInput, geom: &MemGeom, pal: &Palette) -> String {
             x + width - 9
         },
     );
-    out += &pal.mem_box;
+    out += &pal.box_color;
     out += crate::symbols::box_chars::TITLE_LEFT;
     if f.show_disks {
         out += FX_B;
@@ -213,7 +178,7 @@ fn render_frame(input: &MemDrawInput, geom: &MemGeom, pal: &Palette) -> String {
     out += &pal.title;
     out += "isks";
     out += FX_UB;
-    out += &pal.mem_box;
+    out += &pal.box_color;
     out += crate::symbols::box_chars::TITLE_RIGHT;
     // Divider column (:2491-2494).
     if f.show_disks {
@@ -230,7 +195,7 @@ fn render_frame(input: &MemDrawInput, geom: &MemGeom, pal: &Palette) -> String {
         // geometry — emitted here so `draw_mem` stays orchestration-only).
         out += &mv_to(y, x + width - 6);
         out += FX_UB;
-        out += &pal.mem_box;
+        out += &pal.box_color;
         out += crate::symbols::box_chars::TITLE_LEFT;
         if f.io_mode {
             out += FX_B;
@@ -240,7 +205,7 @@ fn render_frame(input: &MemDrawInput, geom: &MemGeom, pal: &Palette) -> String {
         out += &pal.title;
         out += "o";
         out += FX_UB;
-        out += &pal.mem_box;
+        out += &pal.box_color;
         out += crate::symbols::box_chars::TITLE_RIGHT;
     }
     out
@@ -319,14 +284,14 @@ fn render_mem_swap(
         format!(
             "{}{}{}{}{}{}{}{}{}",
             mv_l(2),
-            pal.mem_box,
+            pal.box_color,
             crate::symbols::box_chars::DIV_LEFT,
             pal.div_line,
             &crate::symbols::box_chars::H_LINE.repeat((mem_width - 1).max(0) as usize),
             if f.show_disks {
                 ""
             } else {
-                pal.mem_box.as_str()
+                pal.box_color.as_str()
             },
             crate::symbols::box_chars::DIV_RIGHT,
             mv_l(mem_width - 1),
@@ -350,7 +315,7 @@ fn render_mem_swap(
     out += FX_B;
     out += "Total:";
     out += &rjust_b(
-        &human(input.total_mem, false, f.base_10),
+        &human_bytes(input.total_mem, false, f.base_10),
         (mem_width - 9).max(0) as usize,
     );
     out += FX_UB;
@@ -385,7 +350,7 @@ fn render_mem_swap(
             out += FX_B;
             out += "Swap:";
             out += &rjust_b(
-                &human(
+                &human_bytes(
                     input.stats.get("swap_total").copied().unwrap_or(0),
                     false,
                     f.base_10,
@@ -402,7 +367,7 @@ fn render_mem_swap(
         if title.is_empty() {
             title = capitalize(name); // :1372
         }
-        let humanized = human(
+        let humanized = human_bytes(
             input.stats.get(name).copied().unwrap_or(0),
             false,
             f.base_10,
@@ -540,7 +505,7 @@ fn render_disks_io(
         if disk.io_read.is_empty() {
             continue; // :1406
         }
-        let total = human(disk.total, !big_disk, f.base_10); // :1407
+        let total = human_bytes(disk.total, !big_disk, f.base_10); // :1407
         out += &mv_to(y + 1 + cy, x + 1 + cx);
         out += disk_div;
         out += &pal.title;
@@ -618,7 +583,7 @@ fn render_disks_io(
                     ""
                 },
                 if comb_val > 0 {
-                    format!("{}{}", mv_r(1), human(comb_val as u64, true, f.base_10))
+                    format!("{}{}", mv_r(1), human_bytes(comb_val as u64, true, f.base_10))
                 } else {
                     "RW".to_string()
                 },
@@ -653,7 +618,7 @@ fn render_disks_io(
             let human_read = if disk.io_read.last().copied().unwrap_or(0) > 0 {
                 format!(
                     "▲{}",
-                    human(
+                    human_bytes(
                         disk.io_read.last().copied().unwrap_or(0) as u64,
                         true,
                         f.base_10
@@ -665,7 +630,7 @@ fn render_disks_io(
             let human_write = if disk.io_write.last().copied().unwrap_or(0) > 0 {
                 format!(
                     "▼{}",
-                    human(
+                    human_bytes(
                         disk.io_write.last().copied().unwrap_or(0) as u64,
                         true,
                         f.base_10
@@ -775,14 +740,14 @@ fn render_disks_normal(
                 } else {
                     ""
                 },
-                human(comb_val as u64, true, f.base_10),
+                human_bytes(comb_val as u64, true, f.base_10),
             )
         } else {
             String::new()
         }; // :1448-1449
-        let human_total = human(disk.total, !big_disk, f.base_10); // :1450
-        let human_used = human(disk.used, !big_disk, f.base_10); // :1451
-        let human_free = human(disk.free, !big_disk, f.base_10); // :1452
+        let human_total = human_bytes(disk.total, !big_disk, f.base_10); // :1450
+        let human_used = human_bytes(disk.used, !big_disk, f.base_10); // :1451
+        let human_free = human_bytes(disk.free, !big_disk, f.base_10); // :1452
 
         // Title row (:1454-1455).
         out += &mv_to(y + 1 + cy, x + 1 + cx);
@@ -916,21 +881,7 @@ pub fn draw_mem(input: &MemDrawInput, geom: &MemGeom, theme: &HashMap<String, St
     let lowcolor = f.common.lowcolor;
     let tbg = f.common.theme_background;
 
-    let pal = Palette {
-        mem_box: color("mem_box", theme, lowcolor, tbg),
-        div_line: color("div_line", theme, lowcolor, tbg),
-        main_fg: color("main_fg", theme, lowcolor, tbg),
-        title: color("title", theme, lowcolor, tbg),
-        hi_fg: color("hi_fg", theme, lowcolor, tbg),
-        inactive: color("inactive_fg", theme, lowcolor, tbg),
-        meter_bg: color("meter_bg", theme, lowcolor, tbg),
-        reset: format!(
-            "{}{}{}",
-            "\x1b[0m",
-            color("main_fg", theme, lowcolor, tbg),
-            color("main_bg", theme, lowcolor, tbg),
-        ),
-    };
+    let pal = Palette::new("mem_box", theme, lowcolor, tbg);
 
     // Symbol resolution (:1248 + Graph ctor :498-501).
     let base_symbol: &str = if f.common.tty_mode || input.graph_symbol_mem_cfg == "tty" {
@@ -956,7 +907,7 @@ pub fn draw_mem(input: &MemDrawInput, geom: &MemGeom, theme: &HashMap<String, St
             pal.div_line,
             crate::symbols::box_chars::DIV_LEFT,
             &crate::symbols::box_chars::H_LINE.repeat(geom.disks_width.max(0) as usize),
-            pal.mem_box,
+            pal.box_color,
             FX_UB,
             crate::symbols::box_chars::DIV_RIGHT,
             mv_l(geom.disks_width),

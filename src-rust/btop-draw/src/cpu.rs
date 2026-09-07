@@ -18,10 +18,10 @@
 //! `Graph::push` incrementalism is not used).
 
 use crate::ansi::{mv_l, mv_r, mv_to, FX_B, FX_UB};
-use crate::boxes::{create_box, CommonFlags, CpuGeom};
+use crate::boxes::{celsius_to, create_box, CommonFlags, CpuGeom, Palette};
 use crate::meter_graph::{meter, Graph, GraphOpts};
 use crate::symbols::graph_table;
-use crate::theme_grad::{color, gradient};
+use crate::theme_grad::gradient;
 use btop_tools::strtools::{ljust, rjust, sec_to_dhms, trans, uresize};
 use std::collections::{HashMap, VecDeque};
 
@@ -141,15 +141,7 @@ pub struct CpuDrawInput<'a> {
     pub prev: Option<&'a str>, // cached out for data_same
 }
 
-fn celsius_to(celsius: i64, scale: &str) -> (i64, &'static str) {
-    match scale {
-        "celsius" => (celsius, "°C"),
-        "fahrenheit" => ((celsius as f64 * 1.8 + 32.0).round() as i64, "°F"),
-        "kelvin" => ((celsius as f64 + 273.15).round() as i64, "K "),
-        "rankine" => ((celsius as f64 * 1.8 + 491.67).round() as i64, "°R"),
-        _ => (0, ""),
-    }
-}
+// (celsius_to lives in boxes.rs — shared with gpu.)
 
 /// Graph field resolution (:588-598): "Auto" or unknown falls back to
 /// "total" (upper) / GPU-or-upper (lower). Single resolver — the old
@@ -185,19 +177,7 @@ fn dq_to_vec(dq: &VecDeque<i64>) -> Vec<i64> {
 // `draw_cpu` below is orchestration only; each section below owns one
 // contiguous C++ range and returns its fragment, so the concatenation order
 // in `draw_cpu` matches btop_draw.cpp:567-1029 top to bottom.
-
-/// Resolved palette for one draw call (`Theme::c` under the caller flags).
-struct Palette {
-    cpu_box: String,
-    div_line: String,
-    main_fg: String,
-    title: String,
-    hi_fg: String,
-    inactive: String,
-    meter_bg: String,
-    graph_text: String,
-    reset: String,
-}
+// (Palette lives in boxes.rs — shared with mem/net/gpu.)
 
 /// Outer + inner boxes, title buttons, container name (:2363+:2376, :627-643).
 /// Returns empty when `!force_redraw` (incremental path).
@@ -224,7 +204,7 @@ fn render_frame_buttons(
         y,
         width,
         height,
-        &pal.cpu_box,
+        &pal.box_color,
         true,
         outer_title,
         outer_title2,
@@ -786,22 +766,7 @@ pub fn draw_cpu(input: &CpuDrawInput, geom: &CpuGeom, theme: &HashMap<String, St
     let lowcolor = f.common.lowcolor;
     let tbg = f.common.theme_background;
 
-    let pal = Palette {
-        cpu_box: color("cpu_box", theme, lowcolor, tbg),
-        div_line: color("div_line", theme, lowcolor, tbg),
-        main_fg: color("main_fg", theme, lowcolor, tbg),
-        title: color("title", theme, lowcolor, tbg),
-        hi_fg: color("hi_fg", theme, lowcolor, tbg),
-        inactive: color("inactive_fg", theme, lowcolor, tbg),
-        meter_bg: color("meter_bg", theme, lowcolor, tbg),
-        graph_text: color("graph_text", theme, lowcolor, tbg),
-        reset: format!(
-            "{}{}{}",
-            "\x1b[0m",
-            color("main_fg", theme, lowcolor, tbg),
-            color("main_bg", theme, lowcolor, tbg),
-        ),
-    };
+    let pal = Palette::new("cpu_box", theme, lowcolor, tbg);
 
     let show_temps = f.check_temp && f.got_sensors; // :577
     let show_watts = f.show_watts_cfg && f.supports_watts; // :578
@@ -844,7 +809,7 @@ pub fn draw_cpu(input: &CpuDrawInput, geom: &CpuGeom, theme: &HashMap<String, St
        // Title glyphs: left ┐/┘, right ┌/└ (Symbols::title_left[_down] etc).
     let title_left = format!(
         "{}{}",
-        pal.cpu_box,
+        pal.box_color,
         if f.cpu_bottom {
             crate::symbols::box_chars::TITLE_LEFT_DOWN
         } else {
@@ -853,7 +818,7 @@ pub fn draw_cpu(input: &CpuDrawInput, geom: &CpuGeom, theme: &HashMap<String, St
     );
     let title_right = format!(
         "{}{}",
-        pal.cpu_box,
+        pal.box_color,
         if f.cpu_bottom {
             crate::symbols::box_chars::TITLE_RIGHT_DOWN
         } else {
@@ -934,7 +899,7 @@ pub fn draw_cpu(input: &CpuDrawInput, geom: &CpuGeom, theme: &HashMap<String, St
     if input.force_redraw && mid_line {
         out += &mv_to(y + graph_up_height + 1, x);
         out += FX_UB;
-        out += &pal.cpu_box;
+        out += &pal.box_color;
         out += crate::symbols::box_chars::DIV_LEFT;
         out += &pal.div_line;
         out +=
