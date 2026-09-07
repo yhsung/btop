@@ -9,5 +9,6 @@ pub mod gpu;
 pub mod mem;
 pub mod meter_graph;
 pub mod net;
+pub mod proc_;
 pub mod symbols;
 pub mod theme_grad;

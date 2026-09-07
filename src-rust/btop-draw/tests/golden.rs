@@ -159,6 +159,8 @@ fn draw_fixtures_present() {
         "createBox.ans",
         "banner_gen.ans",
         "calcSizes_S0.ans",
+        "proc_S0.ans",
+        "proc_S1.ans",
     ] {
         let path = fixture_dir().join(name);
         assert!(path.exists(), "missing fixture: {}", path.display());
@@ -1345,4 +1347,322 @@ fn byte_parity_calcSizes_S0() {
         assert!(dump.contains(expected), "hand-derivation mismatch: {expected}");
     }
     assert_eq!(dump, fixture);
+}
+// ── Task 7 byte parity: proc box ───────────────────────────────────────────
+// Harness (tests/draw_golden.cpp:246-286 fixed_procs + :363-364/:383-384):
+// Proc::draw(plist, true, false) at S0 (100x30) and S1 (160x48) under
+// setup() determinism overrides (proc_sorting="pid", proc_reversed=false,
+// proc_tree=false, show_gpu_info="Off"). Geometry =
+// LayoutInput::defaults(w,h) proc part. Theme = Default, tty=false,
+// lowcolor=false, theme_background=true, graph_symbol_proc="default" →
+// "braille". stateless inputs: start/selected/followed=0,
+// followed_pid/detailed_pid/restore_pid=0, update_following=false,
+// should_return=false, last_selected=0, was_last=false, prev_banner=false,
+// filter=None, detailed=None, total_mem=0 (Shared::totalMem headless;
+// fixtures encode the ARM div-by-zero → mem-gradient 0, see proc_.rs).
+
+use btop_draw::proc_::{
+    draw_proc, matches_filter, resolve_follow, resolve_is_last, MouseMap, ProcDetail,
+    ProcDrawInput, ProcFlags, ProcInfo,
+};
+
+fn fixed_procs() -> Vec<ProcInfo> {
+    vec![
+        ProcInfo {
+            pid: 1,
+            name: "launchd".to_string(),
+            cmd: "/sbin/launchd".to_string(),
+            short_cmd: "launchd".to_string(),
+            threads: 4,
+            user: "root".to_string(),
+            mem: 12582912,
+            cpu_p: 0.5,
+            p_nice: 0,
+            prefix: String::new(),
+            tree_index: 0,
+        },
+        ProcInfo {
+            pid: 777,
+            name: "kernel_task".to_string(),
+            cmd: "kernel_task".to_string(),
+            short_cmd: "kernel_task".to_string(),
+            threads: 128,
+            user: "root".to_string(),
+            mem: 134217728,
+            cpu_p: 3.2,
+            p_nice: 0,
+            prefix: String::new(),
+            tree_index: 0,
+        },
+        ProcInfo {
+            pid: 4242,
+            name: "btop".to_string(),
+            cmd: "btop --utf-force".to_string(),
+            short_cmd: "btop".to_string(),
+            threads: 3,
+            user: "tester".to_string(),
+            mem: 67108864,
+            cpu_p: 12.5,
+            p_nice: 0,
+            prefix: String::new(),
+            tree_index: 0,
+        },
+    ]
+}
+
+fn proc_test_input(procs: Vec<ProcInfo>) -> (ProcDrawInput, Vec<MouseMap>) {
+    (
+        ProcDrawInput {
+            procs,
+            numpids: 3,
+            total_mem: 0,
+            sorting: "pid".to_string(),
+            start: 0,
+            selected: 0,
+            followed: 0,
+            followed_pid: 0,
+            detailed_pid: 0,
+            restore_pid: 0,
+            update_following: false,
+            should_return: false,
+            last_selected: 0,
+            was_last: false,
+            prev_banner: false,
+            filter: None,
+            detailed: None,
+            graph_symbol_cfg: "braille".to_string(),
+            graph_symbol_proc_cfg: "default".to_string(),
+            flags: ProcFlags::harness_defaults(),
+            force_redraw: true,
+            data_same: false,
+            prev: None,
+        },
+        Vec::new(),
+    )
+}
+
+#[test]
+fn byte_parity_proc_S0() {
+    let (input, mut maps) = proc_test_input(fixed_procs());
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = draw_proc(&input, &layout.proc, &theme, &mut maps);
+    assert_eq!(out.as_bytes(), fixture_bytes("proc_S0.ans"));
+}
+
+#[test]
+fn byte_parity_proc_S1() {
+    let (input, mut maps) = proc_test_input(fixed_procs());
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(160, 48));
+    let out = draw_proc(&input, &layout.proc, &theme, &mut maps);
+    assert_eq!(out.as_bytes(), fixture_bytes("proc_S1.ans"));
+}
+
+#[test]
+fn proc_data_same_returns_prev() {
+    let (mut input, mut maps) = proc_test_input(fixed_procs());
+    input.data_same = true;
+    input.prev = Some("CACHED".to_string());
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    assert_eq!(draw_proc(&input, &layout.proc, &theme, &mut maps), "CACHED");
+}
+
+#[test]
+fn proc_harness_mouse_maps() {
+    // selected=0, no detail: f + r/e sort buttons + left/right arrows.
+    let (input, mut maps) = proc_test_input(fixed_procs());
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    draw_proc(&input, &layout.proc, &theme, &mut maps);
+    let actions: Vec<&str> = maps.iter().map(|m| m.action.as_str()).collect();
+    assert!(actions.contains(&"f"), "filter map missing: {actions:?}");
+    assert!(actions.contains(&"r"), "reverse map missing: {actions:?}");
+    assert!(actions.contains(&"e"), "tree map missing: {actions:?}");
+    assert!(actions.contains(&"left") && actions.contains(&"right"));
+    assert!(
+        !actions.contains(&"info_enter"),
+        "no selection maps expected"
+    );
+    assert!(!actions.contains(&"u"), "pause button hidden at width 55");
+}
+
+#[test]
+fn proc_smoke_selection_moved() {
+    // selected=1: first row highlighted, bottom action maps appear.
+    let (mut input, mut maps) = proc_test_input(fixed_procs());
+    input.selected = 1;
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = draw_proc(&input, &layout.proc, &theme, &mut maps);
+    assert!(out.contains("launchd"), "selected row missing");
+    let actions: Vec<&str> = maps.iter().map(|m| m.action.as_str()).collect();
+    assert!(
+        actions.contains(&"info_enter"),
+        "info map missing: {actions:?}"
+    );
+    assert!(actions.contains(&"s"), "signals map missing: {actions:?}");
+    assert!(actions.contains(&"N"), "nice map missing: {actions:?}");
+}
+
+#[test]
+fn proc_smoke_empty_list() {
+    // No processes: header + blanks + 0/0 counter, no panic.
+    let (mut input, mut maps) = proc_test_input(vec![]);
+    input.numpids = 0;
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = draw_proc(&input, &layout.proc, &theme, &mut maps);
+    assert!(out.contains("Pid:"), "header missing");
+    assert!(out.contains("0/0"), "empty counter missing");
+}
+
+#[test]
+fn proc_smoke_filter_active() {
+    // Stored filter text shows in the title with a delete map; rows that
+    // miss it are hidden (filtered-flag computation).
+    let (mut input, mut maps) = proc_test_input(fixed_procs());
+    input.filter = Some("btop".to_string());
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = draw_proc(&input, &layout.proc, &theme, &mut maps);
+    assert!(out.contains("btop"), "filter text missing from title");
+    assert!(out.contains(" del"), "delete affordance missing");
+    assert!(
+        !out.contains("launchd"),
+        "non-matching row should be hidden"
+    );
+    assert!(out.contains("4242"), "matching row missing");
+    let actions: Vec<&str> = maps.iter().map(|m| m.action.as_str()).collect();
+    assert!(
+        actions.contains(&"delete"),
+        "delete map missing: {actions:?}"
+    );
+    // Filtering (TextEdit) mode: enter affordance, no f/delete maps.
+    let (mut input2, mut maps2) = proc_test_input(fixed_procs());
+    input2.flags.filtering = true;
+    input2.filter = Some("bt".to_string());
+    let out2 = draw_proc(&input2, &layout.proc, &theme, &mut maps2);
+    assert!(out2.contains('↵'), "filtering enter marker missing");
+    assert!(
+        !maps2.iter().any(|m| m.action == "f"),
+        "no f map while filtering"
+    );
+}
+
+#[test]
+fn proc_smoke_tree_and_name_sorting() {
+    // Tree mode renders prefix+pid lines; a longer sorting name shifts
+    // the sort title (name-sorting arm).
+    let mut procs = fixed_procs();
+    procs[0].prefix = "├─ ".to_string();
+    procs[1].prefix = "│ ├─ ".to_string();
+    procs[2].prefix = "└─ ".to_string();
+    let (mut input, mut maps) = proc_test_input(procs);
+    input.flags.proc_tree = true;
+    input.sorting = "name".to_string();
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = draw_proc(&input, &layout.proc, &theme, &mut maps);
+    assert!(out.contains("Tree:"), "tree header missing");
+    assert!(out.contains("├─ 1"), "tree prefix line missing");
+    assert!(out.contains("name"), "sorting title missing");
+    assert!(!out.contains("Pid:"), "list header should be hidden");
+    // tree_index sentinel hides rows in tree mode.
+    let mut procs2 = fixed_procs();
+    procs2[1].tree_index = 3;
+    let (mut input2, mut maps2) = proc_test_input(procs2);
+    input2.flags.proc_tree = true;
+    let out2 = draw_proc(&input2, &layout.proc, &theme, &mut maps2);
+    assert!(!out2.contains("777"), "sentinel row should be hidden");
+    assert!(out2.contains("4242"), "visible row missing");
+}
+
+#[test]
+fn proc_smoke_detail_open() {
+    // Detail pane: pid/name header, C/M/D + CPU letters, info values,
+    // memory line, hide affordance; list rows still render below.
+    let procs = fixed_procs();
+    let detail = ProcDetail {
+        entry: procs[2].clone(),
+        status: "Running".to_string(),
+        elapsed: "01:23".to_string(),
+        parent: "launchd".to_string(),
+        io_read: "1.0M".to_string(),
+        io_write: "2.0M".to_string(),
+        memory: "64.00 MiB".to_string(),
+        first_mem: 134217728,
+        cpu_history: vec![10, 12, 11, 13, 12, 14, 13],
+        mem_history: vec![67108864; 7],
+    };
+    let (mut input, mut maps) = proc_test_input(procs);
+    input.detailed = Some(detail);
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(160, 48));
+    let out = draw_proc(&input, &layout.proc, &theme, &mut maps);
+    assert!(out.contains("4242"), "detail pid title missing");
+    assert!(out.contains("Status:"), "detail labels missing");
+    assert!(out.contains("Memory:"), "detail memory line missing");
+    assert!(out.contains("hide "), "hide affordance missing");
+    assert!(out.contains("launchd"), "list rows missing below detail");
+    let actions: Vec<&str> = maps.iter().map(|m| m.action.as_str()).collect();
+    assert!(actions.contains(&"enter"), "hide map missing: {actions:?}");
+}
+
+#[test]
+fn proc_smoke_pause_banner_and_percent_mem() {
+    // Paused list: banner row + select_max shrink; percent mem mode.
+    let (mut input, mut maps) = proc_test_input(fixed_procs());
+    input.flags.pause_proc_list = true;
+    input.flags.mem_bytes = false;
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = draw_proc(&input, &layout.proc, &theme, &mut maps);
+    assert!(out.contains("Process list paused"), "banner missing");
+    assert!(out.contains("Mem%"), "percent header missing");
+    assert!(out.contains('%'), "percent readout missing");
+}
+
+#[test]
+fn proc_matches_filter_units() {
+    let procs = fixed_procs();
+    assert!(matches_filter(&procs[0], ""));
+    assert!(matches_filter(&procs[2], "BTOp"));
+    assert!(matches_filter(&procs[1], "777"));
+    assert!(matches_filter(&procs[0], "root"));
+    assert!(!matches_filter(&procs[0], "btop"));
+    assert!(matches_filter(&procs[0], "!"));
+    assert!(!matches_filter(&procs[0], "!.*")); // regex arm is M4
+}
+
+#[test]
+fn proc_resolve_follow_units() {
+    let procs = fixed_procs();
+    // Inert harness case: everything passes through.
+    let r = resolve_follow(
+        &procs, None, false, false, false, false, 0, 0, 0, 0, 0, 0, 17, 3, false, false,
+    );
+    assert_eq!(r, (0, 0, 0, false, 0, false, 17, false));
+    // Follow a live pid: view centers on it.
+    let r = resolve_follow(
+        &procs, None, false, true, false, false, 777, 0, 0, 0, 0, 0, 17, 3, false, false,
+    );
+    assert_eq!(r.0, 0); // start stays (list fits)
+    assert_eq!(r.1, 2); // followed slot for pid 777
+    assert!(r.5); // should_return set
+                  // Follow a dead pid: following disengages, select_max bumped.
+    let r = resolve_follow(
+        &procs, None, false, true, false, false, 9999, 0, 0, 0, 0, 0, 17, 3, false, false,
+    );
+    assert_eq!((r.3, r.4, r.6, r.7), (false, 0, 18, false));
+    // Pause overflow: start advances past a too-large selection.
+    let r = resolve_follow(
+        &procs, None, false, false, true, false, 0, 0, 0, 0, 0, 20, 17, 30, false, false,
+    );
+    assert_eq!(r.0, 1);
+    // Last-row tracking.
+    assert!(resolve_is_last(17, 0, 13, 17, 30, false));
+    assert!(!resolve_is_last(5, 0, 0, 17, 30, false));
+    assert!(resolve_is_last(5, 5, 0, 17, 30, true));
 }
