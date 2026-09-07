@@ -45,21 +45,21 @@ pub struct BatteryState {
 /// Each field cites its cpp line.
 #[derive(Debug, Clone)]
 pub struct CpuFlags {
-    pub check_temp: bool,            // :577 Config check_temp
-    pub got_sensors: bool,           // :577 Cpu::got_sensors
-    pub cpu_temp_only: bool,         // :580 Cpu::cpu_temp_only
-    pub show_coretemp: bool,         // :580 Config show_coretemp
-    pub single_graph: bool,          // :579 Config cpu_single_graph
-    pub invert_lower: bool,          // :697 Config cpu_invert_lower
-    pub show_watts_cfg: bool,        // :578 Config show_cpu_watts
-    pub supports_watts: bool,        // :578 Cpu::supports_watts
-    pub show_freq_cfg: bool,         // :870 Config show_cpu_freq
-    pub has_cpu_hz: bool,            // :870 !cpuHz.empty() (+:2366 hasCpuHz)
-    pub freq_range: bool,            // :864-867 freq_mode=="range" (linux)
-    pub show_uptime: bool,           // :853 Config show_uptime
-    pub show_battery_cfg: bool,      // :766 Config show_battery
-    pub has_battery: bool,           // :766 Cpu::has_battery
-    pub show_battery_watts: bool,    // :781 Config show_battery_watts
+    pub check_temp: bool,         // :577 Config check_temp
+    pub got_sensors: bool,        // :577 Cpu::got_sensors
+    pub cpu_temp_only: bool,      // :580 Cpu::cpu_temp_only
+    pub show_coretemp: bool,      // :580 Config show_coretemp
+    pub single_graph: bool,       // :579 Config cpu_single_graph
+    pub invert_lower: bool,       // :697 Config cpu_invert_lower
+    pub show_watts_cfg: bool,     // :578 Config show_cpu_watts
+    pub supports_watts: bool,     // :578 Cpu::supports_watts
+    pub show_freq_cfg: bool,      // :870 Config show_cpu_freq
+    pub has_cpu_hz: bool,         // :870 !cpuHz.empty() (+:2366 hasCpuHz)
+    pub freq_range: bool,         // :864-867 freq_mode=="range" (linux)
+    pub show_uptime: bool,        // :853 Config show_uptime
+    pub show_battery_cfg: bool,   // :766 Config show_battery
+    pub has_battery: bool,        // :766 Cpu::has_battery
+    pub show_battery_watts: bool, // :781 Config show_battery_watts
     /// Shared box-independent flags (see [`CommonFlags`]; Task 5+ boxes
     /// embed the same struct).
     pub common: CommonFlags,
@@ -135,9 +135,9 @@ pub struct CpuDrawInput<'a> {
     /// C++ calls `system_uptime()` internally; the stateless port takes it
     /// as input (harness: 0, show_uptime=false so never rendered).
     pub uptime_secs: u64,
-    pub term_width: i64,  // :790-791 Term::width (battery only; UNTESTED)
-    pub force_redraw: bool, // :576 force_redraw → redraw
-    pub data_same: bool,  // :822/:843 Graph data_same
+    pub term_width: i64,       // :790-791 Term::width (battery only; UNTESTED)
+    pub force_redraw: bool,    // :576 force_redraw → redraw
+    pub data_same: bool,       // :822/:843 Graph data_same
     pub prev: Option<&'a str>, // cached out for data_same
 }
 
@@ -569,7 +569,12 @@ fn render_meter_line(
     let mut out = String::new();
     let empty_dq: VecDeque<i64> = VecDeque::new();
     // CPU meter line (:875-876).
-    let back = *input.percent.get("total").unwrap_or(&empty_dq).back().unwrap_or(&0);
+    let back = *input
+        .percent
+        .get("total")
+        .unwrap_or(&empty_dq)
+        .back()
+        .unwrap_or(&0);
     out += &mv_to(geom.b_y + 1, geom.b_x + 1);
     out += &pal.main_fg;
     out += FX_B;
@@ -732,8 +737,7 @@ fn render_cores(
         // :954: `if ((++cy > ceil(coreCount/b_columns) or cy == max_row) ...)`
         // — cy increments BEFORE the wrap check.
         cy += 1;
-        if ((cy as f64 > (input.core_count as f64 / geom.b_columns as f64).ceil())
-            || cy == max_row)
+        if ((cy as f64 > (input.core_count as f64 / geom.b_columns as f64).ceil()) || cy == max_row)
             && n != input.core_count - 1
         {
             cc += 1;
@@ -750,13 +754,7 @@ fn render_cores(
 /// Load average (:961-973).
 /// NOTE: C++ increments cy in the for-update expression; the port above
 /// applies the same ++cy / column-wrap explicitly per core.
-fn render_load_avg(
-    load_avg: [f64; 3],
-    geom: &CpuGeom,
-    main_fg: &str,
-    cy: i64,
-    cc: i64,
-) -> String {
+fn render_load_avg(load_avg: [f64; 3], geom: &CpuGeom, main_fg: &str, cy: i64, cc: i64) -> String {
     let mut out = String::new();
     if cy < geom.b_height - 1 && cc <= geom.b_columns {
         let cy = geom.b_height - 2;
@@ -939,7 +937,8 @@ pub fn draw_cpu(input: &CpuDrawInput, geom: &CpuGeom, theme: &HashMap<String, St
         out += &pal.cpu_box;
         out += crate::symbols::box_chars::DIV_LEFT;
         out += &pal.div_line;
-        out += &crate::symbols::box_chars::H_LINE.repeat((width - geom.b_width - 2).max(0) as usize);
+        out +=
+            &crate::symbols::box_chars::H_LINE.repeat((width - geom.b_width - 2).max(0) as usize);
         out += crate::symbols::box_chars::DIV_RIGHT;
         out += &mv_to(
             y + graph_up_height + 1,
@@ -992,7 +991,10 @@ pub fn draw_cpu(input: &CpuDrawInput, geom: &CpuGeom, theme: &HashMap<String, St
     // Cpu clock (:870-873). Harness show_cpu_freq=false.
     if f.show_freq_cfg && !input.cpu_hz.is_empty() {
         let range = f.freq_range;
-        out += &mv_to(geom.b_y, geom.b_x + geom.b_width - if range { 20 } else { 10 });
+        out += &mv_to(
+            geom.b_y,
+            geom.b_x + geom.b_width - if range { 20 } else { 10 },
+        );
         out += FX_UB;
         out += &pal.div_line;
         out += &crate::symbols::box_chars::H_LINE

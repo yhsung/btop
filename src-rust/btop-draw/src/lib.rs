@@ -5,6 +5,8 @@
 pub mod ansi;
 pub mod boxes;
 pub mod cpu;
+pub mod mem;
 pub mod meter_graph;
+pub mod net;
 pub mod symbols;
 pub mod theme_grad;

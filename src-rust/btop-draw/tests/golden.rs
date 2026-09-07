@@ -563,6 +563,484 @@ fn cpu_smoke_gpu_brief_omitted() {
     assert!(!out.is_empty(), "gpu-flagged draw is empty");
     assert!(out.contains("CPU "), "meter line missing");
 }
+// ── Task 5 byte parity: mem + net boxes ──────────────────────────────────
+// Harness (tests/draw_golden.cpp:189-244 fixed_mem/fixed_net + :354-361,
+// :374-381): Mem::draw / Net::draw at S0 (100x30) and S1 (160x48) under
+// setup() determinism overrides (show_swap=true pinned via has_swap,
+// swap_disk=false, io_mode=false, show_gpu_info="Off", net_auto=true,
+// net_sync=true, selected_iface="eth0", graph_max {dl 10M, ul 5M}).
+// Geometry = LayoutInput::defaults(w,h) mem/net parts. Theme = Default.
+// NOTE: fixtures embed totalMem=0 ("Total: ... 0 Byte") — capture.sh notes
+// Mem::get_totalMem() is host-specific; the checked-in .ans was captured
+// where it returned 0, so the tests below pass total_mem=0 explicitly.
+
+use btop_draw::mem::{DiskDraw, MemDrawInput, MemFlags};
+use btop_draw::net::{NetDrawInput, NetFlags, NetStat};
+
+fn fixed_mem_stats() -> HashMap<String, u64> {
+    [
+        ("used", 8589934592u64),
+        ("available", 3221225472u64),
+        ("cached", 2147483648u64),
+        ("free", 5368709120u64),
+        ("swap_total", 4294967296u64),
+        ("swap_used", 1073741824u64),
+        ("swap_free", 3221225472u64),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), *v))
+    .collect()
+}
+
+fn fixed_mem_percent() -> HashMap<String, Vec<i64>> {
+    [
+        ("used", vec![62, 63, 64, 63, 65, 66, 65, 67, 68, 67]),
+        ("available", vec![30, 31, 30, 32, 31, 33, 32, 34, 33, 35]),
+        ("cached", vec![15, 15, 16, 16, 15, 17, 16, 18, 17, 18]),
+        ("free", vec![25, 24, 25, 23, 24, 22, 23, 21, 22, 20]),
+        ("swap_total", vec![25, 25, 25, 25, 25, 25, 25, 25, 25, 25]),
+        ("swap_used", vec![20, 20, 21, 21, 22, 22, 23, 23, 24, 25]),
+        ("swap_free", vec![80, 80, 79, 79, 78, 78, 77, 77, 76, 75]),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.clone()))
+    .collect()
+}
+
+fn fixed_mem_disks() -> (HashMap<String, DiskDraw>, Vec<String>) {
+    let root = DiskDraw {
+        name: "/".to_string(),
+        total: 100000000000,
+        used: 40000000000,
+        free: 60000000000,
+        used_percent: 40,
+        free_percent: 60,
+        io_read: (0..10).map(|i| 1000000 + 500000 * i).collect(),
+        io_write: (0..10).map(|i| 500000 + 250000 * i).collect(),
+        io_activity: vec![10, 15, 20, 25, 30, 35, 30, 25, 20, 15],
+    };
+    (
+        [("/".to_string(), root)].into_iter().collect(),
+        vec!["/".to_string()],
+    )
+}
+
+fn mem_test_input<'a>(
+    stats: &'a HashMap<String, u64>,
+    percent: &'a HashMap<String, Vec<i64>>,
+    disks: &'a HashMap<String, DiskDraw>,
+    order: &'a [String],
+) -> MemDrawInput<'a> {
+    MemDrawInput {
+        stats,
+        percent,
+        disks,
+        disks_order: order,
+        total_mem: 0, // checked-in fixture captured with totalMem=0 (see note above)
+        has_swap: true,
+        disk_ios: 1,
+        io_graph_speeds: "",
+        graph_symbol_cfg: "braille",
+        graph_symbol_mem_cfg: "default",
+        flags: MemFlags::harness_defaults(),
+        force_redraw: true,
+        data_same: false,
+        prev: None,
+    }
+}
+
+#[test]
+fn byte_parity_mem_S0() {
+    let stats = fixed_mem_stats();
+    let percent = fixed_mem_percent();
+    let (disks, order) = fixed_mem_disks();
+    let input = mem_test_input(&stats, &percent, &disks, &order);
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    assert_eq!(out.as_bytes(), fixture_bytes("mem_S0.ans"));
+}
+
+#[test]
+fn byte_parity_mem_S1() {
+    let stats = fixed_mem_stats();
+    let percent = fixed_mem_percent();
+    let (disks, order) = fixed_mem_disks();
+    let input = mem_test_input(&stats, &percent, &disks, &order);
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(160, 48));
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    assert_eq!(out.as_bytes(), fixture_bytes("mem_S1.ans"));
+}
+
+#[test]
+fn mem_data_same_returns_prev() {
+    let stats = fixed_mem_stats();
+    let percent = fixed_mem_percent();
+    let (disks, order) = fixed_mem_disks();
+    let mut input = mem_test_input(&stats, &percent, &disks, &order);
+    input.data_same = true;
+    input.prev = Some("CACHED");
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    assert_eq!(
+        btop_draw::mem::draw_mem(&input, &layout.mem, &theme),
+        "CACHED"
+    );
+}
+
+#[test]
+fn mem_smoke_no_swap() {
+    // Swap hidden three ways (:1354): show_swap=false, has_swap=false,
+    // swap_disk=true (swap becomes a disk in collect, not a meter block).
+    let stats = fixed_mem_stats();
+    let percent = fixed_mem_percent();
+    let (disks, order) = fixed_mem_disks();
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let mut input = mem_test_input(&stats, &percent, &disks, &order);
+    input.flags.show_swap = false;
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    assert!(!out.contains("Swap:"), "swap block should be hidden");
+    assert!(out.contains("Total:"), "mem section missing");
+    let mut input2 = mem_test_input(&stats, &percent, &disks, &order);
+    input2.has_swap = false;
+    let out2 = btop_draw::mem::draw_mem(&input2, &layout.mem, &theme);
+    assert!(
+        !out2.contains("Swap:"),
+        "swap block should be hidden (no swap)"
+    );
+    let mut input3 = mem_test_input(&stats, &percent, &disks, &order);
+    input3.flags.swap_disk = true;
+    let out3 = btop_draw::mem::draw_mem(&input3, &layout.mem, &theme);
+    assert!(
+        !out3.contains("Swap:"),
+        "swap block should be hidden (swap_disk)"
+    );
+}
+
+#[test]
+fn mem_smoke_tall_graph() {
+    // 100x60 → mem height 23, graph_height=2: exercises the `up` cursor-up
+    // (:1349) and the mem_size=3 two-line items at taller graphs. The
+    // meters variant covers the divider.empty() arm (:1381, graph_height=0
+    // with mem_size>2).
+    let stats = fixed_mem_stats();
+    let percent = fixed_mem_percent();
+    let (disks, order) = fixed_mem_disks();
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 60));
+    assert_eq!(layout.mem.graph_height, 2);
+    assert_eq!(layout.mem.mem_size, 3);
+    let input = mem_test_input(&stats, &percent, &disks, &order);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    assert!(out.contains("Total:"), "mem section missing");
+    assert!(out.contains('▲') || out.contains('▼') || out.contains('%'));
+    let mut meters = mem_test_input(&stats, &percent, &disks, &order);
+    meters.flags.use_graphs = false;
+    let out2 = btop_draw::mem::draw_mem(&meters, &layout.mem, &theme);
+    assert!(out2.contains("Total:"), "meter variant missing");
+    assert!(out2.contains('■'), "meter blocks missing");
+}
+
+#[test]
+fn mem_smoke_tiny_height() {
+    // 100x24 → mem height 9: the item loop hits `cy > height-4` and the
+    // swap guard `cy > height-5` (:1356/:1359), so no swap block fits.
+    let stats = fixed_mem_stats();
+    let percent = fixed_mem_percent();
+    let (disks, order) = fixed_mem_disks();
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 24));
+    assert_eq!(layout.mem.base.height, 9);
+    let input = mem_test_input(&stats, &percent, &disks, &order);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    assert!(!out.contains("Swap:"), "swap should not fit at height 9");
+    assert!(out.contains("Total:"), "mem section missing");
+}
+
+#[test]
+fn mem_smoke_narrow() {
+    // 60x48 → mem_width 12 (big_mem=false, :1350/:1380 take-5 arm) and
+    // small disks (disks_width 13, disk_meter via the max(-14,·) arm).
+    let stats = fixed_mem_stats();
+    let percent = fixed_mem_percent();
+    let (disks, order) = fixed_mem_disks();
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(60, 48));
+    assert!(layout.mem.mem_width <= 21);
+    assert_eq!(layout.mem.mem_size, 3);
+    let input = mem_test_input(&stats, &percent, &disks, &order);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    assert!(out.contains("Total:"), "mem section missing");
+    assert!(out.contains("Avail"), "narrow titles missing");
+}
+
+#[test]
+fn mem_smoke_no_disks() {
+    // show_disks=false: disk rows + io title omitted (the `disks` toggle
+    // title itself is unconditional in C++, :2488-2489, so assert on the
+    // disk content `93G` instead). Geometry recomputed with show_disks off
+    // (mem spans the full width, mem_size=2).
+    let stats = fixed_mem_stats();
+    let percent = fixed_mem_percent();
+    let (disks, order) = fixed_mem_disks();
+    let mut input = mem_test_input(&stats, &percent, &disks, &order);
+    input.flags.show_disks = false;
+    let theme = default_theme();
+    let mut li = LayoutInput::defaults(100, 30);
+    li.show_disks = false;
+    let layout = calc_sizes(&li);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    assert!(!out.contains("93G"), "disk rows should be hidden");
+    assert!(!out.contains(" IO"), "io title should be hidden");
+    assert!(out.contains("Total:"), "mem section missing");
+    assert!(out.contains("Avail"), "full-width titles missing");
+}
+
+#[test]
+fn mem_smoke_meters() {
+    // mem_graphs=false: meters instead of graphs.
+    let stats = fixed_mem_stats();
+    let percent = fixed_mem_percent();
+    let (disks, order) = fixed_mem_disks();
+    let mut input = mem_test_input(&stats, &percent, &disks, &order);
+    input.flags.use_graphs = false;
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    assert!(out.contains("Total:"), "mem section missing");
+    assert!(out.contains('■'), "meter blocks missing");
+}
+
+#[test]
+fn mem_smoke_io_mode() {
+    // io_mode=true (split read/write graphs) + combined variant.
+    let stats = fixed_mem_stats();
+    let percent = fixed_mem_percent();
+    let (disks, order) = fixed_mem_disks();
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let mut input = mem_test_input(&stats, &percent, &disks, &order);
+    input.flags.io_mode = true;
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    assert!(out.contains('▲'), "io read marker missing");
+    assert!(out.contains('▼'), "io write marker missing");
+    let mut combined = mem_test_input(&stats, &percent, &disks, &order);
+    combined.flags.io_mode = true;
+    combined.flags.io_graph_combined = true;
+    let out2 = btop_draw::mem::draw_mem(&combined, &layout.mem, &theme);
+    assert!(out2.contains("RW") || out2.contains('▲') || out2.contains('▼'));
+}
+
+#[test]
+fn mem_smoke_no_io_stat() {
+    // show_io_stat=false: activity row omitted in normal disk view.
+    let stats = fixed_mem_stats();
+    let percent = fixed_mem_percent();
+    let (disks, order) = fixed_mem_disks();
+    let mut input = mem_test_input(&stats, &percent, &disks, &order);
+    input.flags.show_io_stat = false;
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    assert!(!out.contains("IO"), "activity row should be hidden");
+    assert!(out.contains('■'), "disk meter blocks missing");
+}
+
+fn fixed_net_bandwidth() -> HashMap<String, Vec<i64>> {
+    [
+        (
+            "download",
+            vec![
+                1000000, 1500000, 2000000, 2500000, 3000000, 3500000, 4000000, 4500000, 5000000,
+                4500000, 4000000, 3500000, 3000000, 2500000, 2000000, 2500000, 3000000, 3500000,
+                4000000, 4500000,
+            ],
+        ),
+        (
+            "upload",
+            vec![
+                500000, 600000, 700000, 800000, 900000, 1000000, 1100000, 1200000, 1300000,
+                1200000, 1100000, 1000000, 900000, 800000, 700000, 800000, 900000, 1000000,
+                1100000, 1200000,
+            ],
+        ),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.clone()))
+    .collect()
+}
+
+fn fixed_net_stat() -> HashMap<String, NetStat> {
+    [
+        (
+            "download",
+            NetStat {
+                speed: 2500000,
+                top: 8000000,
+                total: 123456789012,
+                offset: 0,
+            },
+        ),
+        (
+            "upload",
+            NetStat {
+                speed: 1200000,
+                top: 3000000,
+                total: 45678901234,
+                offset: 0,
+            },
+        ),
+    ]
+    .iter()
+    .map(|(k, v)| {
+        (
+            k.to_string(),
+            NetStat {
+                speed: v.speed,
+                top: v.top,
+                total: v.total,
+                offset: v.offset,
+            },
+        )
+    })
+    .collect()
+}
+
+fn fixed_net_graph_max() -> HashMap<String, u64> {
+    [("download", 10000000u64), ("upload", 5000000u64)]
+        .iter()
+        .map(|(k, v)| (k.to_string(), *v))
+        .collect()
+}
+
+fn net_test_input<'a>(
+    bandwidth: &'a HashMap<String, Vec<i64>>,
+    stat: &'a HashMap<String, NetStat>,
+    graph_max: &'a HashMap<String, u64>,
+) -> NetDrawInput<'a> {
+    NetDrawInput {
+        bandwidth,
+        stat,
+        ipv4: "192.0.2.1",
+        ipv6: "",
+        connected: true,
+        selected_iface: "eth0",
+        graph_max,
+        net_download_cfg: 100,
+        net_upload_cfg: 100,
+        graph_symbol_cfg: "braille",
+        graph_symbol_net_cfg: "default",
+        old_ip: "",
+        flags: NetFlags::harness_defaults(),
+        force_redraw: true,
+        data_same: false,
+        prev: None,
+    }
+}
+
+#[test]
+fn byte_parity_net_S0() {
+    let bw = fixed_net_bandwidth();
+    let stat = fixed_net_stat();
+    let gm = fixed_net_graph_max();
+    let input = net_test_input(&bw, &stat, &gm);
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = btop_draw::net::draw_net(&input, &layout.net, &theme);
+    assert_eq!(out.as_bytes(), fixture_bytes("net_S0.ans"));
+}
+
+#[test]
+fn byte_parity_net_S1() {
+    let bw = fixed_net_bandwidth();
+    let stat = fixed_net_stat();
+    let gm = fixed_net_graph_max();
+    let input = net_test_input(&bw, &stat, &gm);
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(160, 48));
+    let out = btop_draw::net::draw_net(&input, &layout.net, &theme);
+    assert_eq!(out.as_bytes(), fixture_bytes("net_S1.ans"));
+}
+
+#[test]
+fn net_data_same_returns_prev() {
+    let bw = fixed_net_bandwidth();
+    let stat = fixed_net_stat();
+    let gm = fixed_net_graph_max();
+    let mut input = net_test_input(&bw, &stat, &gm);
+    input.data_same = true;
+    input.prev = Some("CACHED");
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    assert_eq!(
+        btop_draw::net::draw_net(&input, &layout.net, &theme),
+        "CACHED"
+    );
+}
+
+#[test]
+fn net_smoke_disconnected() {
+    // connected=false: graphs still render (redraw path), speeds shown.
+    let bw = fixed_net_bandwidth();
+    let stat = fixed_net_stat();
+    let gm = fixed_net_graph_max();
+    let mut input = net_test_input(&bw, &stat, &gm);
+    input.connected = false;
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = btop_draw::net::draw_net(&input, &layout.net, &theme);
+    assert!(
+        out.contains("Total:"),
+        "stat rows missing when disconnected"
+    );
+}
+
+#[test]
+fn net_smoke_swapped() {
+    // swap_upload_download=true: upload on top.
+    let bw = fixed_net_bandwidth();
+    let stat = fixed_net_stat();
+    let gm = fixed_net_graph_max();
+    let mut input = net_test_input(&bw, &stat, &gm);
+    input.flags.swap_upload_download = true;
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = btop_draw::net::draw_net(&input, &layout.net, &theme);
+    assert!(out.contains('▲'), "upload marker missing");
+    assert!(out.contains('▼'), "download marker missing");
+}
+
+#[test]
+fn net_smoke_no_ip() {
+    // empty ipv4+ipv6: no address title run.
+    let bw = fixed_net_bandwidth();
+    let stat = fixed_net_stat();
+    let gm = fixed_net_graph_max();
+    let mut input = net_test_input(&bw, &stat, &gm);
+    input.ipv4 = "";
+    input.ipv6 = "";
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = btop_draw::net::draw_net(&input, &layout.net, &theme);
+    assert!(out.contains("eth0"), "iface selector missing");
+}
+
+#[test]
+fn net_smoke_empty_bandwidth() {
+    // empty bandwidth: frame + reset only (btop_draw.cpp:1525-1526).
+    let bw: HashMap<String, Vec<i64>> = HashMap::new();
+    let stat = fixed_net_stat();
+    let gm = fixed_net_graph_max();
+    let input = net_test_input(&bw, &stat, &gm);
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = btop_draw::net::draw_net(&input, &layout.net, &theme);
+    assert!(!out.is_empty(), "frame should still render");
+    assert!(!out.contains("Total:"), "no stats without bandwidth");
+}
+
 #[test]
 fn byte_parity_calcSizes_S0() {
     let dump = layout_dump(&calc_sizes(&LayoutInput::defaults(100, 30)));

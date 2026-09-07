@@ -32,7 +32,7 @@ pub struct CommonFlags {
     pub rounded: bool,          // Config rounded_corners (createBox :289)
     pub lowcolor: bool,         // Config lowcolor (Theme depth :146)
     pub theme_background: bool, // Config theme_background (color() :133)
-    pub temp_scale: String,      // Config temp_scale (:602)
+    pub temp_scale: String,     // Config temp_scale (:602)
 }
 
 impl CommonFlags {
