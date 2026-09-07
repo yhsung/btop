@@ -24,6 +24,10 @@ use btop_tools::strtools::uresize;
 /// unless `tty_mode` or `!rounded`. Colors and reset are caller-provided
 /// (`Theme::c("div_line"/"hi_fg"/"title")`, `Fx::reset`); the two `bool`s
 /// are Config `tty_mode` / `rounded_corners`.
+///
+/// Layout always passes positive geometry; degenerate `width < 1` or
+/// `height < 1` defensively returns an empty string (C++ would underflow
+/// `width - 1`/`width - 2` into huge repeats).
 #[allow(clippy::too_many_arguments)]
 pub fn create_box(
     x: i64,
@@ -42,6 +46,9 @@ pub fn create_box(
     tty_mode: bool,
     rounded: bool,
 ) -> String {
+    if width < 1 || height < 1 {
+        return String::new();
+    }
     debug_assert!(width >= 1 && height >= 1, "box geometry must be positive");
     let lc = if line_color.is_empty() {
         div_line
@@ -124,6 +131,8 @@ pub fn create_box(
 
 /// Banner source lines `(hex, art)`, transcribed from `Global::Banner_src`
 /// (src/btop.cpp:89-96).
+///
+/// WARNING: hand copy — bump with btop.cpp `Banner_src` (:89-96).
 pub const BANNER_SRC: &[(&str, &str)] = &[
     ("#E62525", "██████╗ ████████╗ ██████╗ ██████╗"),
     ("#CD2121", "██╔══██╗╚══██╔══╝██╔═══██╗██╔══██╗   ██╗    ██╗"),
@@ -140,6 +149,8 @@ pub const BANNER_SRC: &[(&str, &str)] = &[
 ];
 
 /// btop version, transcribed from `Global::Version` (src/btop.cpp:97).
+///
+/// WARNING: hand copy — bump with btop.cpp `Version` (:97).
 pub const BTOP_VERSION: &str = "1.4.7";
 
 /// Unicode scalar count = C++ `ulen(s)` (btop_tools.hpp:177-179 counts
@@ -248,6 +259,7 @@ pub fn banner_gen(
 /// Caller-built wall time. Time acquisition (`time()` + `strf_time` +
 /// `/uptime` expansion, :333-381) is M4; this struct carries the finished
 /// `clock_str` split in two for future format flexibility.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clock {
     pub time: String,
     pub date: String,
@@ -390,6 +402,43 @@ pub struct LayoutInput {
     pub gpu_min_width: i64,
 }
 
+impl LayoutInput {
+    /// Standard harness defaults for `term_w` × `term_h`: the percent/min
+    /// constants (`cpu_width_p` 100 / `cpu_height_p` 32, btop_draw.cpp:546;
+    /// `mem_width_p` 45, :1223; `net_height_p` 28, :1489; `gpu_height_p`
+    /// 32, `gpu_min_height` 8 / `gpu_min_width` 41, :1031-1032) plus the
+    /// S0 harness flags (all boxes shown, `core_count` 8, `show_temp`
+    /// true, `show_disks`/`mem_graphs`/`has_swap` true, the rest false /
+    /// zero / empty). Callers override the fields that differ.
+    pub fn defaults(term_w: usize, term_h: usize) -> Self {
+        Self {
+            term_w: term_w as i64,
+            term_h: term_h as i64,
+            shown_boxes: "cpu mem net proc".to_string(),
+            cpu_bottom: false,
+            mem_below_net: false,
+            proc_left: false,
+            core_count: 8,
+            show_temp: true,
+            cpu_width_p: 100,
+            cpu_height_p: 32,
+            mem_width_p: 45,
+            net_height_p: 28,
+            show_disks: true,
+            swap_disk: false,
+            mem_graphs: true,
+            has_swap: true,
+            swap_upload_download: false,
+            gpus_extra_height: 0,
+            gpu_total_height: 0,
+            gpu_panels: vec![],
+            gpu_height_p: 32,
+            gpu_min_height: 8,
+            gpu_min_width: 41,
+        }
+    }
+}
+
 /// CPU box geometry + inner stats box (`b_*`, :2332-2361).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpuGeom {
@@ -474,91 +523,24 @@ fn hidden() -> BoxGeom {
     }
 }
 
-/// Pure transcription of `Draw::calcSizes` geometry (src/btop_draw.cpp:
-/// 2248-2551). Side effects (clearing `box` strings, `Global::clock`,
-/// mouse mappings, `redraw` flags, `Proc::p_graphs` resets) are caller
-/// concerns; this returns geometry only. Float `round`/`ceil`/`floor`
-/// mirror C++ half-away-from-zero semantics (Rust `f64::round` matches);
-/// the mem height's inner term is integer math.
-pub fn calc_sizes(input: &LayoutInput) -> Layout {
+// Float rounding for the layout helpers below: `round`/`ceil`/`floor`
+// mirror C++ half-away-from-zero semantics (Rust `f64::round` matches);
+// the mem height's inner term is integer math.
+
+/// CPU box geometry + inner stats box (`b_*`, :2332-2361).
+///
+/// Reads `term_w`, `term_h`, `shown_boxes`, `cpu_bottom`, `core_count`,
+/// `show_temp`, `cpu_width_p`, `cpu_height_p`, `gpus_extra_height`,
+/// `gpu_total_height` (pre-pass minimum) and `gpu_panels` (length only).
+pub fn cpu_geom(input: &LayoutInput) -> CpuGeom {
     let boxes = &input.shown_boxes;
     let cpu_shown = boxes.contains("cpu");
     let mem_shown = boxes.contains("mem");
     let net_shown = boxes.contains("net");
     let proc_shown = boxes.contains("proc");
     let gpu_shown = input.gpu_panels.len() as i64;
-
-    // ── cpu (:2307-2377) ──
-    let cpu = if cpu_shown {
-        let width = ((input.term_w as f64) * (input.cpu_width_p as f64) / 100.0).round() as i64;
-        let mut height = if boxes.trim() == "cpu" {
-            100
-        } else {
-            // Integer division: height_p / (shown + 1).
-            input.cpu_height_p / (gpu_shown + 1) + if gpu_shown != 0 { 5 } else { 0 }
-        };
-        height = ((input.term_h as f64) * (height as f64) / 100.0).ceil() as i64;
-        height = height.max(8);
-        if height <= input.term_h - input.gpus_extra_height {
-            height += input.gpus_extra_height;
-        }
-        let x = 1;
-        let y = if input.cpu_bottom {
-            input.term_h - height + 1
-        } else {
-            1
-        };
-
-        let b_columns = 2.max(
-            (((input.core_count + 1) as f64) / ((height - input.gpus_extra_height - 5) as f64))
-                .ceil() as i64,
-        );
-        let show_temp = input.show_temp;
-        // b_column_size 2/1/0 cascade (:2336-2352); the trailing
-        // `b_column_size == 0` fill covers both the third branch and the
-        // recompute-`b_columns` else branch.
-        let t = show_temp as i64;
-        let limit = width - width / 3;
-        let (b_columns, b_column_size, b_width) = if b_columns * (21 + 12 * t) < limit {
-            (
-                b_columns,
-                2,
-                29.max((21 + 12 * t) * b_columns - (b_columns - 1)),
-            )
-        } else if b_columns * (15 + 6 * t) < limit {
-            (b_columns, 1, (15 + 6 * t) * b_columns - (b_columns - 1))
-        } else if b_columns * (8 + 6 * t) < limit {
-            (b_columns, 0, (8 + 6 * t) * b_columns + 1)
-        } else {
-            let bc = limit / (8 + 6 * t);
-            (bc, 0, (8 + 6 * t) * bc + 1)
-        };
-        let b_height = (height - 2).min(
-            ((input.core_count as f64) / (b_columns as f64)).ceil() as i64
-                + 4
-                + input.gpus_extra_height,
-        );
-        let b_x = x + width - b_width - 1;
-        let b_y = y + ((height - 2) as f64 / 2.0).ceil() as i64
-            - (b_height as f64 / 2.0).ceil() as i64
-            + 1;
-        CpuGeom {
-            base: BoxGeom {
-                x,
-                y,
-                width,
-                height,
-                shown: true,
-            },
-            b_columns,
-            b_column_size,
-            b_x,
-            b_y,
-            b_width,
-            b_height,
-        }
-    } else {
-        CpuGeom {
+    if !cpu_shown {
+        return CpuGeom {
             base: hidden(),
             b_columns: 0,
             b_column_size: 0,
@@ -566,11 +548,94 @@ pub fn calc_sizes(input: &LayoutInput) -> Layout {
             b_y: 0,
             b_width: 0,
             b_height: 0,
-        }
+        };
+    }
+    let width = ((input.term_w as f64) * (input.cpu_width_p as f64) / 100.0).round() as i64;
+    // btop_draw.cpp:2319-2320 special: GPU shown while mem/net/proc are
+    // hidden fills the remaining rows instead of the percent formula.
+    let mut height = if gpu_shown != 0 && !(mem_shown || net_shown || proc_shown) {
+        input.term_h - input.gpu_total_height - input.gpus_extra_height
+    } else {
+        let pct = if boxes.trim() == "cpu" {
+            100
+        } else {
+            // Integer division: height_p / (shown + 1).
+            input.cpu_height_p / (gpu_shown + 1) + if gpu_shown != 0 { 5 } else { 0 }
+        };
+        (((input.term_h as f64) * (pct as f64) / 100.0).ceil() as i64).max(8)
     };
-    let cpu_h = cpu.base.height;
+    if height <= input.term_h - input.gpus_extra_height {
+        height += input.gpus_extra_height;
+    }
+    let x = 1;
+    let y = if input.cpu_bottom {
+        input.term_h - height + 1
+    } else {
+        1
+    };
 
-    // ── gpu panels (:2381-2428) ──
+    let b_columns = 2.max(
+        (((input.core_count + 1) as f64) / ((height - input.gpus_extra_height - 5) as f64)).ceil()
+            as i64,
+    );
+    let show_temp = input.show_temp;
+    // b_column_size 2/1/0 cascade (:2336-2352); the trailing
+    // `b_column_size == 0` fill covers both the third branch and the
+    // recompute-`b_columns` else branch.
+    let t = show_temp as i64;
+    let limit = width - width / 3;
+    let (b_columns, b_column_size, b_width) = if b_columns * (21 + 12 * t) < limit {
+        (
+            b_columns,
+            2,
+            29.max((21 + 12 * t) * b_columns - (b_columns - 1)),
+        )
+    } else if b_columns * (15 + 6 * t) < limit {
+        (b_columns, 1, (15 + 6 * t) * b_columns - (b_columns - 1))
+    } else if b_columns * (8 + 6 * t) < limit {
+        (b_columns, 0, (8 + 6 * t) * b_columns + 1)
+    } else {
+        let bc = limit / (8 + 6 * t);
+        (bc, 0, (8 + 6 * t) * bc + 1)
+    };
+    let b_height = (height - 2).min(
+        ((input.core_count as f64) / (b_columns as f64)).ceil() as i64
+            + 4
+            + input.gpus_extra_height,
+    );
+    let b_x = x + width - b_width - 1;
+    let b_y =
+        y + ((height - 2) as f64 / 2.0).ceil() as i64 - (b_height as f64 / 2.0).ceil() as i64 + 1;
+    CpuGeom {
+        base: BoxGeom {
+            x,
+            y,
+            width,
+            height,
+            shown: true,
+        },
+        b_columns,
+        b_column_size,
+        b_x,
+        b_y,
+        b_width,
+        b_height,
+    }
+}
+
+/// GPU panels' outer + inner stats boxes (:2381-2428). Returns the panels
+/// plus the summed total height (the `Gpu::total_height` overwrite).
+///
+/// Reads `term_w`, `term_h`, `shown_boxes`, `cpu_bottom`, `gpu_panels`,
+/// `gpu_height_p`, `gpu_min_height`, `gpu_min_width`. `cpu_h` is the
+/// computed CPU box height (0 when hidden).
+pub fn gpu_geoms(input: &LayoutInput, cpu_h: i64) -> (Vec<GpuGeom>, i64) {
+    let boxes = &input.shown_boxes;
+    let cpu_shown = boxes.contains("cpu");
+    let mem_shown = boxes.contains("mem");
+    let net_shown = boxes.contains("net");
+    let proc_shown = boxes.contains("proc");
+    let gpu_shown = input.gpu_panels.len() as i64;
     let mut gpu_panels = Vec::new();
     let mut gpu_total = 0i64;
     if gpu_shown != 0 {
@@ -621,93 +686,24 @@ pub fn calc_sizes(input: &LayoutInput) -> Layout {
             });
         }
     }
-    let gpu_total_height = if gpu_shown != 0 {
-        gpu_total
-    } else {
-        input.gpu_total_height
-    };
+    (gpu_panels, gpu_total)
+}
 
-    // ── mem (:2431-2496) ──
-    let mem = if mem_shown {
-        let width = ((input.term_w as f64)
-            * ((if proc_shown { input.mem_width_p } else { 100 }) as f64)
-            / 100.0)
-            .round() as i64;
-        // Inner term is integer math (:2439).
-        let net_term = input.net_height_p * (net_shown as i64) * 4
-            / ((gpu_shown != 0 && cpu_shown) as i64 + 4);
-        let height = ((input.term_h as f64) * ((100 - net_term) as f64) / 100.0).floor() as i64
-            - cpu_h
-            - gpu_total_height;
-        let x = if input.proc_left && proc_shown {
-            input.term_w - width + 1
-        } else {
-            1
-        };
-        let y = if input.mem_below_net && net_shown {
-            input.term_h - height + 1 - if input.cpu_bottom { cpu_h } else { 0 }
-        } else {
-            (if input.cpu_bottom { 1 } else { cpu_h + 1 }) + gpu_total_height
-        };
-        let (mem_width, disks_width, divider) = if input.show_disks {
-            let mut mw = (((width - 3) as f64) / 2.0).ceil() as i64;
-            mw += mw % 2;
-            (mw, width - mw - 2, x + mw)
-        } else {
-            // C++ leaves `divider` stale here; the pure version reports `x`.
-            (width - 1, 0, x)
-        };
-        let swap_block = input.has_swap && !input.swap_disk;
-        let item_height = if swap_block { 6 } else { 4 };
-        let mem_size = if height - (if swap_block { 3 } else { 2 }) > 2 * item_height {
-            3
-        } else if mem_width > 25 {
-            2
-        } else {
-            1
-        };
-        let mut mem_meter = 0.max(mem_width - if mem_size > 2 { 7 } else { 17 });
-        if mem_size == 1 {
-            mem_meter += 6;
-        }
-        let mut graph_height = 0;
-        if input.mem_graphs {
-            graph_height = 1.max(
-                ((((height - (if swap_block { 2 } else { 1 }))
-                    - (if mem_size == 3 { 2 } else { 1 }) * item_height) as f64)
-                    / (item_height as f64))
-                    .round() as i64,
-            );
-            if graph_height > 1 {
-                mem_meter += 6;
-            }
-        }
-        let mut disk_meter = 0;
-        if input.show_disks {
-            disk_meter = (-14).max(width - mem_width - 23);
-            if disks_width < 25 {
-                disk_meter += 14;
-            }
-        }
-        MemGeom {
-            base: BoxGeom {
-                x,
-                y,
-                width,
-                height,
-                shown: true,
-            },
-            mem_width,
-            disks_width,
-            divider,
-            item_height,
-            mem_size,
-            mem_meter,
-            graph_height,
-            disk_meter,
-        }
-    } else {
-        MemGeom {
+/// Mem box geometry + meter/graph splits (:2455-2485).
+///
+/// Reads `term_w`, `term_h`, `shown_boxes`, `cpu_bottom`, `mem_below_net`,
+/// `proc_left`, `mem_width_p`, `net_height_p`, `show_disks`, `swap_disk`,
+/// `mem_graphs`, `has_swap`. `cpu_h`/`gpu_total_height` are the computed
+/// CPU height and GPU total height.
+pub fn mem_geom(input: &LayoutInput, cpu_h: i64, gpu_total_height: i64) -> MemGeom {
+    let boxes = &input.shown_boxes;
+    let cpu_shown = boxes.contains("cpu");
+    let mem_shown = boxes.contains("mem");
+    let net_shown = boxes.contains("net");
+    let proc_shown = boxes.contains("proc");
+    let gpu_shown = input.gpu_panels.len() as i64;
+    if !mem_shown {
+        return MemGeom {
             base: hidden(),
             mem_width: 0,
             disks_width: 0,
@@ -717,52 +713,99 @@ pub fn calc_sizes(input: &LayoutInput) -> Layout {
             mem_meter: 0,
             graph_height: 0,
             disk_meter: 0,
-        }
-    };
-    let (mem_w, mem_h) = (mem.base.width, mem.base.height);
-
-    // ── net (:2499-2530) ──
-    let net = if net_shown {
-        let width = ((input.term_w as f64)
-            * ((if proc_shown { input.mem_width_p } else { 100 }) as f64)
-            / 100.0)
-            .round() as i64;
-        let height = input.term_h - cpu_h - gpu_total_height - mem_h;
-        let x = if input.proc_left && proc_shown {
-            input.term_w - width + 1
-        } else {
-            1
         };
-        let y = if input.mem_below_net && mem_shown {
-            (if input.cpu_bottom { 1 } else { cpu_h + 1 }) + gpu_total_height
-        } else {
-            input.term_h - height + 1 - if input.cpu_bottom { cpu_h } else { 0 }
-        };
-        let b_width = if width > 45 { 27 } else { 19 };
-        let b_height = if height > 10 { 9 } else { height - 2 };
-        let b_x = x + width - b_width - 1;
-        // Integer divisions, as in C++.
-        let b_y = y + (height - 2) / 2 - b_height / 2 + 1;
-        let d_graph_height = (((height - 2) as f64) / 2.0).round() as i64;
-        let u_graph_height = height - 2 - d_graph_height;
-        let _ = input.swap_upload_download; // title order only, no geometry
-        NetGeom {
-            base: BoxGeom {
-                x,
-                y,
-                width,
-                height,
-                shown: true,
-            },
-            b_x,
-            b_y,
-            b_width,
-            b_height,
-            d_graph_height,
-            u_graph_height,
-        }
+    }
+    let width = ((input.term_w as f64)
+        * ((if proc_shown { input.mem_width_p } else { 100 }) as f64)
+        / 100.0)
+        .round() as i64;
+    // Inner term is integer math (:2439).
+    let net_term =
+        input.net_height_p * (net_shown as i64) * 4 / ((gpu_shown != 0 && cpu_shown) as i64 + 4);
+    let height = ((input.term_h as f64) * ((100 - net_term) as f64) / 100.0).floor() as i64
+        - cpu_h
+        - gpu_total_height;
+    let x = if input.proc_left && proc_shown {
+        input.term_w - width + 1
     } else {
-        NetGeom {
+        1
+    };
+    let y = if input.mem_below_net && net_shown {
+        input.term_h - height + 1 - if input.cpu_bottom { cpu_h } else { 0 }
+    } else {
+        (if input.cpu_bottom { 1 } else { cpu_h + 1 }) + gpu_total_height
+    };
+    let (mem_width, disks_width, divider) = if input.show_disks {
+        let mut mw = (((width - 3) as f64) / 2.0).ceil() as i64;
+        mw += mw % 2;
+        (mw, width - mw - 2, x + mw)
+    } else {
+        // C++ leaves `divider` stale here; the pure version reports `x`.
+        (width - 1, 0, x)
+    };
+    let swap_block = input.has_swap && !input.swap_disk;
+    let item_height = if swap_block { 6 } else { 4 };
+    let mem_size = if height - (if swap_block { 3 } else { 2 }) > 2 * item_height {
+        3
+    } else if mem_width > 25 {
+        2
+    } else {
+        1
+    };
+    let mut mem_meter = 0.max(mem_width - if mem_size > 2 { 7 } else { 17 });
+    if mem_size == 1 {
+        mem_meter += 6;
+    }
+    let mut graph_height = 0;
+    if input.mem_graphs {
+        graph_height = 1.max(
+            ((((height - (if swap_block { 2 } else { 1 }))
+                - (if mem_size == 3 { 2 } else { 1 }) * item_height) as f64)
+                / (item_height as f64))
+                .round() as i64,
+        );
+        if graph_height > 1 {
+            mem_meter += 6;
+        }
+    }
+    let mut disk_meter = 0;
+    if input.show_disks {
+        disk_meter = (-14).max(width - mem_width - 23);
+        if disks_width < 25 {
+            disk_meter += 14;
+        }
+    }
+    MemGeom {
+        base: BoxGeom {
+            x,
+            y,
+            width,
+            height,
+            shown: true,
+        },
+        mem_width,
+        disks_width,
+        divider,
+        item_height,
+        mem_size,
+        mem_meter,
+        graph_height,
+        disk_meter,
+    }
+}
+
+/// Net box geometry + inner stats box + up/down graph heights (:2517-2522).
+///
+/// Reads `term_w`, `term_h`, `shown_boxes`, `cpu_bottom`, `mem_below_net`,
+/// `proc_left`, `mem_width_p`, `swap_upload_download` (title order only,
+/// no geometry). `cpu_h`/`gpu_total_height`/`mem_h` are computed heights.
+pub fn net_geom(input: &LayoutInput, cpu_h: i64, gpu_total_height: i64, mem_h: i64) -> NetGeom {
+    let boxes = &input.shown_boxes;
+    let net_shown = boxes.contains("net");
+    let mem_shown = boxes.contains("mem");
+    let proc_shown = boxes.contains("proc");
+    if !net_shown {
+        return NetGeom {
             base: hidden(),
             b_x: 0,
             b_y: 0,
@@ -770,47 +813,127 @@ pub fn calc_sizes(input: &LayoutInput) -> Layout {
             b_height: 0,
             d_graph_height: 0,
             u_graph_height: 0,
-        }
-    };
-    let (net_w, _net_h) = (net.base.width, net.base.height);
-
-    // ── proc (:2533-2549) ──
-    let proc = if proc_shown {
-        let width = input.term_w
-            - if mem_shown {
-                mem_w
-            } else if net_shown {
-                net_w
-            } else {
-                0
-            };
-        let height = input.term_h - cpu_h - gpu_total_height;
-        let x = if input.proc_left {
-            1
-        } else {
-            input.term_w - width + 1
         };
-        let y = if input.cpu_bottom && cpu_shown {
-            1
-        } else {
-            cpu_h + 1
-        };
-        ProcGeom {
-            base: BoxGeom {
-                x,
-                y,
-                width,
-                height,
-                shown: true,
-            },
-            select_max: height - 3,
-        }
+    }
+    let width = ((input.term_w as f64)
+        * ((if proc_shown { input.mem_width_p } else { 100 }) as f64)
+        / 100.0)
+        .round() as i64;
+    let height = input.term_h - cpu_h - gpu_total_height - mem_h;
+    let x = if input.proc_left && proc_shown {
+        input.term_w - width + 1
     } else {
-        ProcGeom {
+        1
+    };
+    let y = if input.mem_below_net && mem_shown {
+        (if input.cpu_bottom { 1 } else { cpu_h + 1 }) + gpu_total_height
+    } else {
+        input.term_h - height + 1 - if input.cpu_bottom { cpu_h } else { 0 }
+    };
+    let b_width = if width > 45 { 27 } else { 19 };
+    let b_height = if height > 10 { 9 } else { height - 2 };
+    let b_x = x + width - b_width - 1;
+    // Integer divisions, as in C++.
+    let b_y = y + (height - 2) / 2 - b_height / 2 + 1;
+    let d_graph_height = (((height - 2) as f64) / 2.0).round() as i64;
+    let u_graph_height = height - 2 - d_graph_height;
+    let _ = input.swap_upload_download; // title order only, no geometry
+    NetGeom {
+        base: BoxGeom {
+            x,
+            y,
+            width,
+            height,
+            shown: true,
+        },
+        b_x,
+        b_y,
+        b_width,
+        b_height,
+        d_graph_height,
+        u_graph_height,
+    }
+}
+
+/// Proc box geometry + visible-row bound (:2547).
+///
+/// Reads `term_w`, `term_h`, `shown_boxes`, `cpu_bottom`, `proc_left`.
+/// `cpu_h`/`gpu_total_height` are computed heights; `mem_w`/`net_w` are
+/// the computed mem/net widths (used when those boxes are shown).
+pub fn proc_geom(
+    input: &LayoutInput,
+    cpu_h: i64,
+    gpu_total_height: i64,
+    mem_w: i64,
+    net_w: i64,
+) -> ProcGeom {
+    let boxes = &input.shown_boxes;
+    let cpu_shown = boxes.contains("cpu");
+    let mem_shown = boxes.contains("mem");
+    let net_shown = boxes.contains("net");
+    let proc_shown = boxes.contains("proc");
+    if !proc_shown {
+        return ProcGeom {
             base: hidden(),
             select_max: 0,
-        }
+        };
+    }
+    let width = input.term_w
+        - if mem_shown {
+            mem_w
+        } else if net_shown {
+            net_w
+        } else {
+            0
+        };
+    let height = input.term_h - cpu_h - gpu_total_height;
+    let x = if input.proc_left {
+        1
+    } else {
+        input.term_w - width + 1
     };
+    let y = if input.cpu_bottom && cpu_shown {
+        1
+    } else {
+        cpu_h + 1
+    };
+    ProcGeom {
+        base: BoxGeom {
+            x,
+            y,
+            width,
+            height,
+            shown: true,
+        },
+        select_max: height - 3,
+    }
+}
+
+/// Pure transcription of `Draw::calcSizes` geometry (src/btop_draw.cpp:
+/// 2248-2551). Side effects (clearing `box` strings, `Global::clock`,
+/// mouse mappings, `redraw` flags, `Proc::p_graphs` resets) are caller
+/// concerns; this returns geometry only. Orchestration calling
+/// [`cpu_geom`], [`gpu_geoms`], [`mem_geom`], [`net_geom`], [`proc_geom`]
+/// in C++ order (cpu → gpu → mem → net → proc); later boxes reuse the
+/// computed heights/widths exactly as the C++ statics do.
+pub fn calc_sizes(input: &LayoutInput) -> Layout {
+    let cpu = cpu_geom(input);
+    let cpu_h = cpu.base.height;
+
+    let (gpu_panels, gpu_computed_total) = gpu_geoms(input, cpu_h);
+    let gpu_total_height = if input.gpu_panels.is_empty() {
+        input.gpu_total_height
+    } else {
+        gpu_computed_total
+    };
+
+    let mem = mem_geom(input, cpu_h, gpu_total_height);
+    let (mem_w, mem_h) = (mem.base.width, mem.base.height);
+
+    let net = net_geom(input, cpu_h, gpu_total_height, mem_h);
+    let (net_w, _net_h) = (net.base.width, net.base.height);
+
+    let proc = proc_geom(input, cpu_h, gpu_total_height, mem_w, net_w);
 
     Layout {
         cpu,
@@ -925,31 +1048,39 @@ mod tests {
     /// swap_disk=false, mem_graphs=true, has_swap=true, GPU build with no
     /// panels. All values below hand-derived from the C++ math.
     fn s0_input() -> LayoutInput {
-        LayoutInput {
-            term_w: 100,
-            term_h: 30,
-            shown_boxes: "cpu mem net proc".to_string(),
-            cpu_bottom: false,
-            mem_below_net: false,
-            proc_left: false,
-            core_count: 8,
-            show_temp: true,
-            cpu_width_p: 100,
-            cpu_height_p: 32,
-            mem_width_p: 45,
-            net_height_p: 28,
-            show_disks: true,
-            swap_disk: false,
-            mem_graphs: true,
-            has_swap: true,
-            swap_upload_download: false,
-            gpus_extra_height: 0,
-            gpu_total_height: 0,
-            gpu_panels: vec![],
-            gpu_height_p: 32,
-            gpu_min_height: 8,
-            gpu_min_width: 41,
+        LayoutInput::defaults(100, 30)
+    }
+
+    #[test]
+    fn create_box_degenerate_returns_empty() {
+        // Defensive guard: layout guarantees positivity; non-positive
+        // geometry returns empty instead of underflowing repeats.
+        for (w, h) in [(0, 5), (5, 0), (0, 0), (-3, 4), (4, -2)] {
+            assert_eq!(
+                create_box(1, 1, w, h, LC, false, "", "", 0, "D", HI, TI, RESET, false, true),
+                String::new(),
+                "w={w} h={h}"
+            );
         }
+    }
+
+    #[test]
+    fn cpu_gpu_only_height_fills_remaining_rows() {
+        // btop_draw.cpp:2319-2320 special branch: GPU shown while
+        // mem/net/proc are hidden → height = term_h - pre-pass
+        // gpu_total - gpus_extra (no percent formula, no max(8)).
+        // Pre-pass total = 4 + b_offset (7) = 11 per panel.
+        let mut input = s0_input();
+        input.shown_boxes = "cpu gpu0".to_string();
+        input.gpu_panels = vec![GpuPanel {
+            panel: 0,
+            b_offset: 7,
+        }];
+        input.gpu_total_height = 11;
+        let cpu = cpu_geom(&input);
+        // 30 - 11 - 0 = 19 (percent path would give ceil(30*21/100)=7→8).
+        assert_eq!(cpu.base.height, 19);
+        assert_eq!(cpu.base.width, 100);
     }
 
     #[test]

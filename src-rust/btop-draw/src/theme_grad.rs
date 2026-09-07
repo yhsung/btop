@@ -32,6 +32,8 @@ use std::collections::HashMap;
 /// (src/btop_theme.cpp:52-101). There is no `themes/Default.theme` file;
 /// the map below is the single source (used headless by `setTheme` when
 /// the theme name is `"Default"`).
+///
+/// WARNING: hand copy — bump with btop_theme.cpp `Default_theme`.
 pub fn default_theme() -> HashMap<String, String> {
     [
         ("main_bg", "#00"),
@@ -234,6 +236,15 @@ pub fn gradient(name: &str, theme: &HashMap<String, String>, to_256: bool) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_theme_entry_count_and_spots() {
+        // 48 entries in btop_theme.cpp:52-101; spot-check two hexes.
+        let theme = default_theme();
+        assert_eq!(theme.len(), 48);
+        assert_eq!(theme["main_fg"], "#cc");
+        assert_eq!(theme["cpu_start"], "#77ca9b");
+    }
 
     #[test]
     fn default_gradient_names() {

@@ -10,6 +10,7 @@
 //! harness fixtures (`meter_50.ans` / `graph_default.ans` /
 //! `graph_tty.ans`).
 
+use btop_draw::boxes::{banner_gen, calc_sizes, create_box, Layout, LayoutInput};
 use btop_draw::meter_graph::{meter, Graph, GraphOpts};
 use btop_draw::theme_grad::{color, default_theme, gradient};
 use std::path::PathBuf;
@@ -151,7 +152,14 @@ fn graph_push_appends_one_cell() {
 #[test]
 fn draw_fixtures_present() {
     // Byte-parity targets for the tests below.
-    for name in ["meter_50.ans", "graph_default.ans", "graph_tty.ans"] {
+    for name in [
+        "meter_50.ans",
+        "graph_default.ans",
+        "graph_tty.ans",
+        "createBox.ans",
+        "banner_gen.ans",
+        "calcSizes_S0.ans",
+    ] {
         let path = fixture_dir().join(name);
         assert!(path.exists(), "missing fixture: {}", path.display());
         assert!(!std::fs::read(&path).unwrap().is_empty());
@@ -221,4 +229,125 @@ fn byte_parity_graph_tty() {
     let data: Vec<i64> = (1..=8).map(|i| i * 10).collect();
     let graph = Graph::new(opts(g, 20, 5, "tty", false, false, 0, 0), &reset, &data);
     assert_eq!(graph.render().as_bytes(), fixture_bytes("graph_tty.ans"));
+}
+
+// ── Task 3 review: box/banner/calcSizes byte parity ───────────────────────
+// Harness emits (tests/draw_golden.cpp): Draw::createBox(2, 3, 10, 5, "",
+// false, "t", "b", 1) under Config defaults (tty_mode=false,
+// rounded_corners=true); Draw::banner_gen(2, 3, false, false) at S0
+// (100x30, centered=false); and the calcSizes S0 geometry dump.
+
+#[test]
+fn byte_parity_createBox() {
+    // Fixed small box with div_line fallback, square titles, superscript 1.
+    let theme = default_theme();
+    let (_, reset) = harness_colors();
+    let out = create_box(
+        2,
+        3,
+        10,
+        5,
+        "",
+        false,
+        "t",
+        "b",
+        1,
+        &color("div_line", &theme, false, true),
+        &color("hi_fg", &theme, false, true),
+        &color("title", &theme, false, true),
+        &reset,
+        false,
+        true,
+    );
+    assert_eq!(out.as_bytes(), fixture_bytes("createBox.ans"));
+}
+
+#[test]
+fn byte_parity_banner_gen() {
+    // banner_gen(y=2, x=3, centered=false) at term_width=100.
+    let theme = default_theme();
+    let (_, reset) = harness_colors();
+    let out = banner_gen(
+        2,
+        3,
+        false,
+        100,
+        false,
+        false,
+        &color("main_fg", &theme, false, true),
+        &reset,
+    );
+    assert_eq!(out.as_bytes(), fixture_bytes("banner_gen.ans"));
+}
+
+/// Stable S0 geometry dump, mirroring the harness format documented in
+/// tests/draw_golden.cpp (one `box k=v ...` line per box).
+fn layout_dump(l: &Layout) -> String {
+    format!(
+        "cpu x={} y={} w={} h={} bx={} by={} bw={} bh={} bcols={} bcolsz={}\n\
+         mem x={} y={} w={} h={} memw={} disksw={} div={} itemh={} memsz={} meterm={} graphh={} diskm={}\n\
+         net x={} y={} w={} h={} bx={} by={} bw={} bh={} dgraph={} ugraph={}\n\
+         proc x={} y={} w={} h={} selmax={}\n\
+         gputotal h={}",
+        l.cpu.base.x,
+        l.cpu.base.y,
+        l.cpu.base.width,
+        l.cpu.base.height,
+        l.cpu.b_x,
+        l.cpu.b_y,
+        l.cpu.b_width,
+        l.cpu.b_height,
+        l.cpu.b_columns,
+        l.cpu.b_column_size,
+        l.mem.base.x,
+        l.mem.base.y,
+        l.mem.base.width,
+        l.mem.base.height,
+        l.mem.mem_width,
+        l.mem.disks_width,
+        l.mem.divider,
+        l.mem.item_height,
+        l.mem.mem_size,
+        l.mem.mem_meter,
+        l.mem.graph_height,
+        l.mem.disk_meter,
+        l.net.base.x,
+        l.net.base.y,
+        l.net.base.width,
+        l.net.base.height,
+        l.net.b_x,
+        l.net.b_y,
+        l.net.b_width,
+        l.net.b_height,
+        l.net.d_graph_height,
+        l.net.u_graph_height,
+        l.proc.base.x,
+        l.proc.base.y,
+        l.proc.base.width,
+        l.proc.base.height,
+        l.proc.select_max,
+        l.gpu_total_height,
+    )
+}
+
+#[test]
+fn byte_parity_calcSizes_S0() {
+    let dump = layout_dump(&calc_sizes(&LayoutInput::defaults(100, 30)));
+    let text = std::fs::read_to_string(fixture_dir().join("calcSizes_S0.ans")).unwrap();
+    let fixture = text.strip_suffix('\n').unwrap();
+    // Cross-check: Rust output contains each dumped key=value line.
+    for line in fixture.lines() {
+        assert!(dump.contains(line), "missing dump line: {line}");
+    }
+    // Hand-derived S0 lines (same values as boxes.rs s0_all_boxes_geometry).
+    for expected in [
+        "cpu x=1 y=1 w=100 h=10 bx=35 by=2 bw=65 bh=8 bcols=2 bcolsz=2",
+        "mem x=1 y=11 w=45 h=11 memw=22 disksw=21 div=23 itemh=6 memsz=1 meterm=11 graphh=1 diskm=14",
+        "net x=1 y=22 w=45 h=9 bx=26 by=23 bw=19 bh=7 dgraph=4 ugraph=3",
+        "proc x=46 y=11 w=55 h=20 selmax=17",
+        "gputotal h=0",
+    ] {
+        assert!(dump.contains(expected), "hand-derivation mismatch: {expected}");
+    }
+    assert_eq!(dump, fixture);
 }

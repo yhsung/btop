@@ -1,0 +1,5 @@
+cpu x=1 y=1 w=100 h=10 bx=35 by=2 bw=65 bh=8 bcols=2 bcolsz=2
+mem x=1 y=11 w=45 h=11 memw=22 disksw=21 div=23 itemh=6 memsz=1 meterm=11 graphh=1 diskm=14
+net x=1 y=22 w=45 h=9 bx=26 by=23 bw=19 bh=7 dgraph=4 ugraph=3
+proc x=46 y=11 w=55 h=20 selmax=17
+gputotal h=0

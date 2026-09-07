@@ -25,6 +25,7 @@
 #include <array>
 #include <cstdio>
 #include <deque>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -34,6 +35,18 @@
 #include "btop_shared.hpp"
 #include "btop_theme.hpp"
 #include "btop_tools.hpp"
+
+namespace Cpu {
+extern int b_columns, b_column_size;
+extern int b_x, b_y, b_width, b_height;
+}
+namespace Mem {
+extern int mem_width, disks_width, divider, item_height, mem_size, mem_meter;
+extern int graph_height, disk_meter;
+}
+namespace Net {
+extern int b_x, b_y, b_width, b_height, d_graph_height, u_graph_height;
+}
 
 namespace {
 
@@ -45,6 +58,9 @@ using namespace std::literals;
 
 constexpr int S0_W = 100, S0_H = 30; // small terminal
 constexpr int S1_W = 160, S1_H = 48; // large terminal
+
+// (Geometry externs above are at global scope so they merge with the
+// ::Cpu/::Mem/::Net definitions in src/btop_draw.cpp.)
 
 void emit(const string& name, const string& out) {
 	printf("@@BEGIN:%s@@\n%s\n@@END:%s@@\n", name.c_str(), out.c_str(), name.c_str());
@@ -277,6 +293,7 @@ Gpu::gpu_info fixed_gpu() {
 	gpu.gpu_percent["gpu-pwr-totals"] = {50, 52, 54, 56, 58, 60, 58, 56, 54, 52};
 	gpu.gpu_clock_speed = 1800; // MHz
 	gpu.pwr_usage = 125000; // mW
+	gpu.pwr_state = 8; // P-state (member has no default init; pin it — unpinned garbage drifted across rebuilds)
 	gpu.temp = {55, 56, 57, 58, 59, 60};
 	gpu.temp_max = 95;
 	gpu.mem_total = 17179869184; // 16 GiB
@@ -298,6 +315,35 @@ int main() {
 	emit("meter_50", Draw::Meter(50, "cpu", false)(75));
 	emit("graph_default", Draw::Graph(20, 5, "cpu", graph_data(), "default")());
 	emit("graph_tty", Draw::Graph(20, 5, "cpu", graph_data(), "tty")());
+
+	// Box/banner/calcSizes fixtures. Still under the S0 setup above, so
+	// the calcSizes dump reflects the S0 geometry. Stable key=value text
+	// format (one line per box; also mirrored by the Rust layout_dump
+	// test helper):
+	//   "cpu x=.. y=.. w=.. h=.. bx=.. by=.. bw=.. bh=.. bcols=.. bcolsz=.."
+	//   "mem x=.. y=.. w=.. h=.. memw=.. disksw=.. div=.. itemh=.. memsz=.. meterm=.. graphh=.. diskm=.."
+	//   "net x=.. y=.. w=.. h=.. bx=.. by=.. bw=.. bh=.. dgraph=.. ugraph=.."
+	//   "proc x=.. y=.. w=.. h=.. selmax=.."
+	//   "gputotal h=.."
+	emit("createBox", Draw::createBox(2, 3, 10, 5, "", false, "t", "b", 1));
+	emit("banner_gen", Draw::banner_gen(2, 3, false, false));
+	{
+		std::ostringstream oss;
+		oss << "cpu x=" << Cpu::x << " y=" << Cpu::y << " w=" << Cpu::width << " h=" << Cpu::height
+			<< " bx=" << Cpu::b_x << " by=" << Cpu::b_y << " bw=" << Cpu::b_width << " bh=" << Cpu::b_height
+			<< " bcols=" << Cpu::b_columns << " bcolsz=" << Cpu::b_column_size << "\n";
+		oss << "mem x=" << Mem::x << " y=" << Mem::y << " w=" << Mem::width << " h=" << Mem::height
+			<< " memw=" << Mem::mem_width << " disksw=" << Mem::disks_width << " div=" << Mem::divider
+			<< " itemh=" << Mem::item_height << " memsz=" << Mem::mem_size << " meterm=" << Mem::mem_meter
+			<< " graphh=" << Mem::graph_height << " diskm=" << Mem::disk_meter << "\n";
+		oss << "net x=" << Net::x << " y=" << Net::y << " w=" << Net::width << " h=" << Net::height
+			<< " bx=" << Net::b_x << " by=" << Net::b_y << " bw=" << Net::b_width << " bh=" << Net::b_height
+			<< " dgraph=" << Net::d_graph_height << " ugraph=" << Net::u_graph_height << "\n";
+		oss << "proc x=" << Proc::x << " y=" << Proc::y << " w=" << Proc::width << " h=" << Proc::height
+			<< " selmax=" << Proc::select_max << "\n";
+		oss << "gputotal h=" << Gpu::total_height;
+		emit("calcSizes_S0", oss.str());
+	}
 
 	// Box scenarios at S0.
 	{
