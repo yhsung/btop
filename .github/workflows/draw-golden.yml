@@ -1,0 +1,37 @@
+name: draw-golden
+
+permissions: {}
+
+on:
+  pull_request:
+    paths: ["src/**", "tests/**", ".github/workflows/draw-golden.yml"]
+  push:
+    paths: ["src/**", "tests/**", ".github/workflows/draw-golden.yml"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  draw-golden:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install build tools
+        run: |
+          brew update --quiet
+          brew install --force --overwrite --quiet cmake lld llvm ninja
+      - name: Configure
+        run: |
+          export CXX="$(brew --prefix llvm)/bin/clang++"
+          export LDFLAGS="-L$(brew --prefix llvm)/lib/c++ -fuse-ld=$(brew --prefix lld)/bin/ld64.lld"
+          cmake -B build -G Ninja
+      - name: Build harness
+        run: cmake --build build --target draw_golden
+      - name: Re-capture fixtures
+        run: sh src-rust/fixtures/draw/capture.sh build/tests/draw_golden
+      - name: Fail on drift
+        run: git diff --exit-code -- src-rust/fixtures/draw/
