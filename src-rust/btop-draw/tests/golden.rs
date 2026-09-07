@@ -330,6 +330,138 @@ fn layout_dump(l: &Layout) -> String {
     )
 }
 
+// ── Task 4 byte parity: cpu box ──────────────────────────────────────────
+// Harness (tests/draw_golden.cpp:157-187 fixed_cpu + :349-353/:369-373):
+// Cpu::draw(cpu, no_gpus, true, false) at S0 (100x30) and S1 (160x48)
+// under setup() determinism overrides (clock_format="", show_uptime=false,
+// show_battery=false, show_cpu_watts=false, show_cpu_freq=false,
+// cpu_graph_upper/lower="total", show_gpu_info="Off", coreCount=8,
+// cpuName="Golden Test CPU 8-Core", cpuHz empty, available_fields
+// {"Auto","total"}, got_sensors=true, cpu_temp_only=false, has_battery=false,
+// supports_watts=false). Geometry = LayoutInput::defaults(w,h) cpu part.
+// Theme = Default, tty=false, lowcolor=false, theme_background=true.
+
+use btop_draw::cpu::{draw_cpu, CpuDrawInput, CpuFlags};
+use std::collections::{HashMap, VecDeque};
+
+fn fixed_cpu_percent() -> HashMap<String, VecDeque<i64>> {
+    let mut m = HashMap::new();
+    m.insert(
+        "total".to_string(),
+        VecDeque::from([
+            12, 18, 25, 31, 27, 35, 42, 38, 45, 52, 48, 55, 61, 58, 64, 70, 66, 72, 78, 75,
+        ]),
+    );
+    m
+}
+
+fn fixed_cpu_cores() -> Vec<VecDeque<i64>> {
+    [
+        [8, 12, 15, 18, 22, 25, 28, 30, 33, 35],
+        [20, 25, 30, 35, 40, 45, 50, 55, 60, 65],
+        [5, 10, 8, 12, 15, 10, 14, 18, 16, 20],
+        [70, 65, 72, 68, 75, 71, 78, 74, 80, 77],
+        [30, 32, 34, 36, 38, 40, 42, 44, 46, 48],
+        [50, 48, 52, 55, 53, 57, 60, 58, 62, 65],
+        [15, 18, 22, 20, 25, 28, 26, 30, 33, 31],
+        [40, 45, 42, 48, 50, 47, 52, 55, 53, 58],
+    ]
+    .iter()
+    .map(|a| VecDeque::from(*a))
+    .collect()
+}
+
+fn fixed_cpu_temp() -> Vec<VecDeque<i64>> {
+    [
+        [55, 56, 55, 57, 56, 58, 57, 58, 59, 58],
+        [50, 51, 50, 52, 51, 53, 52, 53, 54, 53],
+        [52, 52, 53, 53, 54, 54, 55, 55, 56, 56],
+        [48, 49, 48, 50, 49, 51, 50, 52, 51, 53],
+        [60, 61, 60, 62, 61, 63, 62, 64, 63, 65],
+        [54, 55, 54, 56, 55, 57, 56, 58, 57, 59],
+        [58, 58, 59, 59, 60, 60, 61, 61, 62, 62],
+        [51, 52, 51, 53, 52, 54, 53, 55, 54, 56],
+        [57, 57, 58, 58, 59, 59, 60, 60, 61, 61],
+    ]
+    .iter()
+    .map(|a| VecDeque::from(*a))
+    .collect()
+}
+
+fn cpu_test_input<'a>(
+    percent: &'a HashMap<String, VecDeque<i64>>,
+    cores: &'a [VecDeque<i64>],
+    temp: &'a [VecDeque<i64>],
+) -> CpuDrawInput<'a> {
+    static AVAILABLE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let available = AVAILABLE.get_or_init(|| vec!["Auto".to_string(), "total".to_string()]);
+    CpuDrawInput {
+        percent,
+        cores,
+        temp,
+        temp_max: 95,
+        load_avg: [1.5, 1.2, 1.0],
+        usage_watts: 0.0,
+        active_cpus: None,
+        core_count: 8,
+        cpu_name: "Golden Test CPU 8-Core",
+        custom_cpu_name: "",
+        cpu_hz: "",
+        container_engine: None,
+        graph_up_cfg: "total",
+        graph_lo_cfg: "total",
+        available_fields: available,
+        graph_symbol_cfg: "braille",
+        graph_symbol_cpu_cfg: "default",
+        temp_scale: "celsius",
+        flags: CpuFlags::harness_defaults(),
+        battery: None,
+        term_width: 100,
+        force_redraw: true,
+        data_same: false,
+        prev: None,
+    }
+}
+
+#[test]
+fn byte_parity_cpu_S0() {
+    let percent = fixed_cpu_percent();
+    let cores = fixed_cpu_cores();
+    let temp = fixed_cpu_temp();
+    let input = cpu_test_input(&percent, &cores, &temp);
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let out = draw_cpu(&input, &layout.cpu, &theme);
+    assert_eq!(out.as_bytes(), fixture_bytes("cpu_S0.ans"));
+}
+
+#[test]
+fn byte_parity_cpu_S1() {
+    let percent = fixed_cpu_percent();
+    let cores = fixed_cpu_cores();
+    let temp = fixed_cpu_temp();
+    let mut input = cpu_test_input(&percent, &cores, &temp);
+    input.term_width = 160;
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(160, 48));
+    let out = draw_cpu(&input, &layout.cpu, &theme);
+    assert_eq!(out.as_bytes(), fixture_bytes("cpu_S1.ans"));
+}
+
+#[test]
+fn cpu_data_same_returns_prev() {
+    // data_same → cached out (btop_draw.cpp Graph::operator(data_same=true)
+    // returns `out`; Rust returns `prev` unchanged).
+    let percent = fixed_cpu_percent();
+    let cores = fixed_cpu_cores();
+    let temp = fixed_cpu_temp();
+    let mut input = cpu_test_input(&percent, &cores, &temp);
+    input.data_same = true;
+    input.prev = Some("CACHED");
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    assert_eq!(draw_cpu(&input, &layout.cpu, &theme), "CACHED");
+}
 #[test]
 fn byte_parity_calcSizes_S0() {
     let dump = layout_dump(&calc_sizes(&LayoutInput::defaults(100, 30)));

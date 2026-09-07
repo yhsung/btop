@@ -4,6 +4,7 @@
 
 pub mod ansi;
 pub mod boxes;
+pub mod cpu;
 pub mod meter_graph;
 pub mod symbols;
 pub mod theme_grad;
