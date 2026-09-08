@@ -55,6 +55,7 @@ impl TextEdit {
             self.pos = self.text.len();
             self.upos = ulen(&self.text, false);
         } else if key == "backspace" && self.pos > 0 {
+            // pos > 0 implies upos > 0 by the boundary invariant.
             if self.pos == self.text.len() {
                 self.upos -= 1;
                 self.text = uresize(&self.text, self.upos, false);
@@ -131,9 +132,9 @@ impl TextEdit {
         };
 
         // `out` is non-empty whenever `text` is: the no-limit arm clones
-        // `text`, and in the limit arm `first` is always non-empty (arm 1
-        // resizes a non-empty head to >= 1 char; arm 2 has ulen == half >= 1;
-        // arm 3 resizes a non-empty head to half >= 1). Hence `ulen(out) - 1`
+        // `text`, and in the limit arm `out` (`first` + `tail`) keeps at
+        // least one char (`first` may be empty at cursor-0, but then `tail`
+        // takes `limit >= 1` chars of the non-empty remainder). Hence `ulen(out) - 1`
         // below cannot underflow, and the final else arm has
         // 1 <= c_upos <= ulen(out) - 1.
         if c_upos == 0 {
@@ -219,5 +220,45 @@ mod tests {
         let out = e.render(0);
         assert!(out.starts_with("ab"));
         assert!(out.contains(' '));
+    }
+
+    // Limit-window cases hand-derived from btop_draw.cpp:244-262 + :267-272.
+    // text "abcdef" (len 6), limit 4 -> half = round(4/2) = 2.
+    #[test]
+    fn render_limit_window_start() {
+        // upos=0: arm 3 (wraps, else): first="" tail="abcd", c_upos=0.
+        let mut e = TextEdit::new("abcdef".into(), false);
+        e.command("home");
+        assert_eq!(e.render(4), format!("{UL}a{UUL}bcd"));
+    }
+
+    #[test]
+    fn render_limit_window_middle() {
+        // upos=3: arm 3: first=luresize("abc",2)="bc",
+        // tail=uresize("def",2)="de" -> out="bcde", c_upos=2.
+        let mut e = TextEdit::new("abcdef".into(), false);
+        e.command("left");
+        e.command("left");
+        e.command("left");
+        assert_eq!((e.pos, e.upos), (3, 3));
+        assert_eq!(e.render(4), format!("bc{UL}d{UUL}e"));
+    }
+
+    #[test]
+    fn render_limit_window_end() {
+        // upos=6: arm 1 (6+2>6): first=luresize("abcdef",4)="cdef",
+        // tail="" -> out="cdef", c_upos=4=len -> trailing cursor.
+        let e = TextEdit::new("abcdef".into(), false);
+        assert_eq!(e.render(4), format!("cdef{UL} {UUL}"));
+    }
+
+    #[test]
+    fn render_multibyte_cursor_middle_no_limit() {
+        // "a中b" (pos=4,upos=2 after one left): no window (limit 0),
+        // out="a中b", c_upos=2 -> middle arm underlines "b".
+        let mut e = TextEdit::new("a中b".into(), false);
+        e.command("left");
+        assert_eq!((e.pos, e.upos), (4, 2));
+        assert_eq!(e.render(0), format!("a中{UL}b{UUL}"));
     }
 }
