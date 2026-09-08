@@ -37,10 +37,6 @@
 //! ["pid","name","command","threads","user","memory","cpu direct","cpu lazy"];
 //! left/right wrap-around (missing ⇒ len, --<0 ⇒ len-1, ++>len-1 ⇒ 0) is
 //! transcribed in the P3 sink per the SortPrev/SortNext contracts below.
-//!
-//! SPLIT NOTE: proc mouse geometry (btop_input.cpp:393-460 — proc_mouse,
-//! ScrollKey::Row/ScrollUp/ScrollDown consumers, keys::decode_mouse_pos)
-//! lands in the follow-up commit; until then every mouse_ key keeps_going.
 
 use crate::textedit::TextEdit;
 
@@ -536,6 +532,9 @@ fn proc_key(
         let mut out = vec![Action::ClearFilter];
         out.extend(runs(true, true));
         Some(out)
+    } else if key.starts_with("mouse_") {
+        // :393-460 (redraw=false for the whole block, :394).
+        proc_mouse(key, st, view, editor, now_ms)
     } else if key == "enter" || key == "info_enter" {
         // :461-490. update_following (:489) rides in the Detail contracts.
         if view.selected == 0 && !view.show_detailed {
@@ -642,6 +641,116 @@ fn proc_key(
     } else {
         None
     }
+}
+
+/// Mouse arm of the proc section (:393-460). The caller threads
+/// decode_mouse_pos(raw) into st.mouse_pos; None ⇒ keep_going (None).
+fn proc_mouse(
+    key: &str,
+    st: &mut InputState,
+    view: &ViewState,
+    editor: &mut TextEdit,
+    now_ms: u64,
+) -> Option<Vec<Action>> {
+    let (col, line) = st.mouse_pos?;
+    let y = if view.show_detailed_geom {
+        view.proc_geom.y + 8
+    } else {
+        view.proc_geom.y
+    };
+    let height = if view.show_detailed_geom {
+        view.proc_geom.height - 8
+    } else {
+        view.proc_geom.height
+    };
+    let g = &view.proc_geom;
+    // `> x` ≡ C++ `>= x + 1` for integers (transcribed from :398).
+    let in_box = col > g.x && col < g.x + g.width && line > y && line < y + height - 1;
+    if key == "mouse_click" {
+        if in_box {
+            if col < g.x + g.width - 2 {
+                // :400-429 main zone.
+                let row = line - y - 1;
+                if view.selected == row {
+                    // :403-415 same-row click: tree x-zone recurses into
+                    // space, otherwise into enter. (The local redraw=true at
+                    // :404 dies with the recursion — C++ returns the sub-run.)
+                    if view.tree {
+                        let x_pos = col - g.x;
+                        let offset = view.selected_depth * 3;
+                        if x_pos > offset && x_pos < 4 + offset {
+                            return Some(
+                                proc_key("space", st, view, editor, now_ms).unwrap_or_default(),
+                            );
+                        }
+                    }
+                    return Some(proc_key("enter", st, view, editor, now_ms).unwrap_or_default());
+                } else if view.banner_shown && line == y + height - 2 {
+                    // :416-417 banner row guard: bare return, no runs.
+                    return Some(Vec::new());
+                }
+                // :418-428 row select (+follow-break :421-425).
+                let mut rd = view.selected == 0 || row == 0;
+                let mut out = Vec::new();
+                if view.follow_process && !view.pause_proc_list {
+                    out.push(Action::Unfollow);
+                    out.push(sint("followed_pid", 0));
+                    out.push(sint("proc_followed", 0));
+                    rd = true;
+                }
+                out.push(Action::ProcSelectRow { row });
+                out.extend(runs(true, rd));
+                return Some(out);
+            } else if line == y + 1 {
+                // :430-432 page-up gutter (-1 ⇒ sink suppresses runs).
+                return Some(scroll_actions(ScrollKey::PageUp, false));
+            } else if line == y + height - 2 {
+                // :433-435 page-down gutter.
+                return Some(scroll_actions(ScrollKey::PageDown, false));
+            } else if line == y + 2 + view.scroll_pos {
+                // :436-438 drag handle.
+                st.dragging_scroll = true;
+                let mut out = vec![Action::SetDraggingScroll { on: true }];
+                out.extend(runs(true, false));
+                return Some(out);
+            }
+            // :439-440 scrollbar mousey (-1 ⇒ sink suppresses runs).
+            let mut out = vec![Action::ProcScroll {
+                key: ScrollKey::Row(line - y - 2),
+            }];
+            out.extend(runs(true, false));
+            return Some(out);
+        } else if view.selected > 0 {
+            // :442-450 outside-box deselect (+follow-break).
+            let mut out = vec![sint("proc_selected", 0)];
+            if view.follow_process && !view.pause_proc_list {
+                out.push(Action::Unfollow);
+                out.push(sint("followed_pid", 0));
+                out.push(sint("proc_followed", 0));
+            }
+            out.extend(runs(true, true));
+            return Some(out);
+        }
+        // Outside-box click with nothing selected: the arm matched but changed
+        // nothing ⇒ trailing runs with redraw=false (keep_going stays false).
+        return Some(runs(true, false));
+    } else if (key == "mouse_scroll_up" || key == "mouse_scroll_down") && in_box {
+        // :452-453 goto proc_mouse_scroll.
+        let sk = if key == "mouse_scroll_up" {
+            ScrollKey::ScrollUp
+        } else {
+            ScrollKey::ScrollDown
+        };
+        return Some(scroll_actions(sk, false));
+    } else if key == "mouse_drag" && st.dragging_scroll {
+        // :455-457 scrollbar drag: selection result ignored, run kept.
+        let mut out = vec![Action::ProcScroll {
+            key: ScrollKey::Row(line - y - 2),
+        }];
+        out.extend(runs(true, false));
+        return Some(out);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1184,8 +1293,191 @@ mod tests {
         assert_eq!(prockey("F", &mut st, &view, &mut ed), run_pair(true, true));
     }
 
-    //? Scroll keys (:522-531). Mouse scroll/drag share this path via the
-    //? proc_mouse_scroll goto — wired in the follow-up commit.
+    //? Mouse geometry (:393-460). Geom x=1,y=2,w=40,h=15 ⇒ y=2; in-box is
+    // col∈[2,41), line∈[3,16); main zone col<39; page-up line=3, page-down
+    // line=15; drag row line=2+2+scroll_pos.
+
+    fn moused(col: i64, line: i64) -> InputState {
+        InputState {
+            mouse_pos: Some((col, line)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn click_selects_row_with_redraw() {
+        // Row 2 selected from 0 ⇒ redraw=true (:418-419).
+        let view = proc_view();
+        let mut st = moused(5, 5);
+        let mut ed = TextEdit::new(String::new(), false);
+        let mut expected = vec![Action::ProcSelectRow { row: 2 }];
+        expected.extend(run_pair(true, true));
+        assert_eq!(prockey("mouse_click", &mut st, &view, &mut ed), expected);
+    }
+
+    #[test]
+    fn click_breaks_follow_before_selecting() {
+        // follow && !pause ⇒ Unfollow + zero Sets first (:421-425), then row.
+        let view = ViewState {
+            selected: 3,
+            follow_process: true,
+            ..proc_view()
+        };
+        let mut st = moused(5, 5);
+        let mut ed = TextEdit::new(String::new(), false);
+        let mut expected = vec![
+            Action::Unfollow,
+            sint("followed_pid", 0),
+            sint("proc_followed", 0),
+            Action::ProcSelectRow { row: 2 },
+        ];
+        expected.extend(run_pair(true, true));
+        assert_eq!(prockey("mouse_click", &mut st, &view, &mut ed), expected);
+    }
+
+    #[test]
+    fn click_same_row_recurses_into_enter() {
+        // selected==row ⇒ process("enter") inline (:403-414); result equals a
+        // direct enter dispatch (detail open for selected_pid=42).
+        let view = ViewState {
+            selected: 2,
+            selected_pid: 42,
+            ..proc_view()
+        };
+        let mut st = moused(5, 5);
+        let mut ed = TextEdit::new(String::new(), false);
+        let via_click = prockey("mouse_click", &mut st, &view, &mut ed);
+        let mut st2 = InputState::default();
+        let mut ed2 = TextEdit::new(String::new(), false);
+        assert_eq!(via_click, prockey("enter", &mut st2, &view, &mut ed2));
+        assert!(matches!(via_click[0], Action::ProcDetailOpen));
+    }
+
+    #[test]
+    fn click_tree_xzone_recurses_into_space() {
+        // tree + x_pos in (offset,4+offset) ⇒ process("space") (:405-411).
+        // selected_depth=1 ⇒ offset=3; col=6,x=1 ⇒ x_pos=5 ∈ (3,7).
+        let view = ViewState {
+            tree: true,
+            selected: 2,
+            selected_pid: 42,
+            selected_depth: 1,
+            ..proc_view()
+        };
+        let mut st = moused(6, 5);
+        let mut ed = TextEdit::new(String::new(), false);
+        let mut expected = vec![
+            Action::ExpandPid { pid: 42 },
+            Action::CollapsePid { pid: 42 },
+        ];
+        expected.extend(run_pair(false, true));
+        assert_eq!(prockey("mouse_click", &mut st, &view, &mut ed), expected);
+    }
+
+    #[test]
+    fn click_banner_row_is_swallowed() {
+        // banner row with a different row selected ⇒ bare return (:416-417).
+        let view = ViewState {
+            selected: 5,
+            banner_shown: true,
+            ..proc_view()
+        };
+        let mut st = moused(5, 15); // line == y+height-2
+        let mut ed = TextEdit::new(String::new(), false);
+        assert_eq!(
+            prockey("mouse_click", &mut st, &view, &mut ed),
+            Vec::<Action>::new()
+        );
+    }
+
+    #[test]
+    fn click_gutter_page_buttons_scroll() {
+        let view = proc_view();
+        let mut ed = TextEdit::new(String::new(), false);
+        // Top gutter (y+1) ⇒ page_up; bottom (y+height-2) ⇒ page_down.
+        let mut st = moused(39, 3);
+        assert_eq!(
+            prockey("mouse_click", &mut st, &view, &mut ed),
+            scroll_actions(ScrollKey::PageUp, false)
+        );
+        let mut st = moused(39, 15);
+        assert_eq!(
+            prockey("mouse_click", &mut st, &view, &mut ed),
+            scroll_actions(ScrollKey::PageDown, false)
+        );
+    }
+
+    #[test]
+    fn click_drag_row_arms_scroll_flag() {
+        // line == y+2+scroll_pos ⇒ dragging_scroll + trailing runs (:436-438).
+        let view = ViewState {
+            scroll_pos: 4,
+            ..proc_view()
+        };
+        let mut st = moused(39, 8);
+        let mut ed = TextEdit::new(String::new(), false);
+        let mut expected = vec![Action::SetDraggingScroll { on: true }];
+        expected.extend(run_pair(true, false));
+        assert_eq!(prockey("mouse_click", &mut st, &view, &mut ed), expected);
+        assert!(st.dragging_scroll);
+    }
+
+    #[test]
+    fn click_scrollbar_mousey_selects_start() {
+        // Other gutter rows ⇒ selection("mousey{N}"), N=line-y-2 (:439-440).
+        let view = proc_view();
+        let mut st = moused(39, 10);
+        let mut ed = TextEdit::new(String::new(), false);
+        let mut expected = vec![Action::ProcScroll {
+            key: ScrollKey::Row(6),
+        }];
+        expected.extend(run_pair(true, false));
+        assert_eq!(prockey("mouse_click", &mut st, &view, &mut ed), expected);
+    }
+
+    #[test]
+    fn click_outside_deselects_and_breaks_follow() {
+        let view = ViewState {
+            selected: 3,
+            follow_process: true,
+            ..proc_view()
+        };
+        let mut st = moused(100, 100);
+        let mut ed = TextEdit::new(String::new(), false);
+        let mut expected = vec![
+            sint("proc_selected", 0),
+            Action::Unfollow,
+            sint("followed_pid", 0),
+            sint("proc_followed", 0),
+        ];
+        expected.extend(run_pair(true, true));
+        assert_eq!(prockey("mouse_click", &mut st, &view, &mut ed), expected);
+    }
+
+    #[test]
+    fn click_outside_with_nothing_selected_runs_quiet() {
+        // Arm matched but changed nothing ⇒ trailing runs, redraw=false.
+        let view = proc_view();
+        let mut st = moused(100, 100);
+        let mut ed = TextEdit::new(String::new(), false);
+        assert_eq!(
+            prockey("mouse_click", &mut st, &view, &mut ed),
+            run_pair(true, false)
+        );
+    }
+
+    #[test]
+    fn click_without_pos_keeps_going() {
+        let view = proc_view();
+        let mut st = InputState::default(); // mouse_pos None
+        let mut ed = TextEdit::new(String::new(), false);
+        assert_eq!(
+            prockey("mouse_click", &mut st, &view, &mut ed),
+            Vec::<Action>::new()
+        );
+    }
+
+    //? Scroll keys + mouse scroll/drag (:452-457, :522-531).
 
     #[test]
     fn scroll_redraw_only_from_unselected() {
@@ -1247,6 +1539,49 @@ mod tests {
                 Action::ProcScroll { key: sk }
             );
         }
+    }
+
+    #[test]
+    fn mouse_scroll_needs_in_box() {
+        let view = proc_view();
+        let mut ed = TextEdit::new(String::new(), false);
+        let mut st = moused(5, 5);
+        assert_eq!(
+            prockey("mouse_scroll_up", &mut st, &view, &mut ed),
+            scroll_actions(ScrollKey::ScrollUp, false)
+        );
+        let mut st = moused(5, 5);
+        assert_eq!(
+            prockey("mouse_scroll_down", &mut st, &view, &mut ed),
+            scroll_actions(ScrollKey::ScrollDown, false)
+        );
+        // Outside the box ⇒ keep_going ⇒ empty.
+        let mut st = moused(100, 100);
+        assert_eq!(
+            prockey("mouse_scroll_up", &mut st, &view, &mut ed),
+            Vec::<Action>::new()
+        );
+    }
+
+    #[test]
+    fn mouse_drag_scrolls_only_when_armed() {
+        let view = proc_view();
+        let mut ed = TextEdit::new(String::new(), false);
+        let mut st = InputState {
+            mouse_pos: Some((39, 10)),
+            dragging_scroll: true,
+            ..Default::default()
+        };
+        let mut expected = vec![Action::ProcScroll {
+            key: ScrollKey::Row(6),
+        }];
+        expected.extend(run_pair(true, false));
+        assert_eq!(prockey("mouse_drag", &mut st, &view, &mut ed), expected);
+        let mut st = moused(39, 10);
+        assert_eq!(
+            prockey("mouse_drag", &mut st, &view, &mut ed),
+            Vec::<Action>::new()
+        );
     }
 
     //? Detail open/close (:461-490).

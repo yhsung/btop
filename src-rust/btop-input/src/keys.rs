@@ -58,27 +58,9 @@ pub fn decode_key(
         key.remove(0);
     }
     if key.starts_with("[<") {
-        let mut view = key.as_str();
-        let mouse_event: Option<&str>;
-        if view.starts_with("[<0;") && view.contains('M') {
-            mouse_event = Some("mouse_click");
-            view = &view[4..];
-        } else if view.starts_with("[<32;") {
-            mouse_event = Some("mouse_drag");
-            view = &view[5..];
-        } else if view.starts_with("[<0;") && view.ends_with('m') {
-            mouse_event = Some("mouse_release");
-            view = &view[4..];
-        } else if view.starts_with("[<64;") {
-            mouse_event = Some("mouse_scroll_up");
-            view = &view[5..];
-        } else if view.starts_with("[<65;") {
-            mouse_event = Some("mouse_scroll_down");
-            view = &view[5..];
-        } else {
+        let Some((mouse_event, rest)) = mouse_event_and_rest(&key) else {
             return String::new();
-        }
-        let mouse_event = mouse_event.expect("set in every branch above");
+        };
         if filtering {
             if mouse_event == "mouse_click" {
                 return mouse_event.to_string();
@@ -89,18 +71,10 @@ pub fn decode_key(
         // Position parse: col/line are i32 (stoi_prefix). Compare in i64 (lossless;
         // narrowing the rect to i32 could truncate absurd coords). For release
         // events (trailing lowercase 'm'), find('M') misses and mpos falls back
-        // to view.len() — tolerated because stoi_prefix stops at non-digits.
-        let Some(semi) = view.find(';') else {
+        // to rest.len() — tolerated because stoi_prefix stops at non-digits.
+        let Some((col, line)) = mouse_coords(rest) else {
             return String::new();
         };
-        let mpos = view.find('M').unwrap_or(view.len());
-        let (Ok(col), Ok(line)) = (
-            stoi_prefix(&view[..semi]),
-            stoi_prefix(&view[semi + 1..mpos]),
-        ) else {
-            return String::new();
-        };
-        let (col, line) = (col as i64, line as i64);
         let mut key = mouse_event.to_string();
         if key == "mouse_click" || key == "mouse_drag" {
             let maps = if menu_active { menu_maps } else { input_maps };
@@ -119,6 +93,65 @@ pub fn decode_key(
     } else {
         key
     }
+}
+
+/// SGR mouse event classifier: mirrors the `key_view.starts_with` chain in
+/// `Input::get()` (btop_input.cpp:135-156). Returns the event name plus the
+/// remainder after the event prefix (`"col;lineM"`), or `None` when the shape
+/// does not match (C++ `key.clear()` path). Branch order is load-bearing:
+/// click (`[<0;` + `M`) is tested before release (`[<0;` + trailing `m`).
+fn mouse_event_and_rest(key: &str) -> Option<(&'static str, &str)> {
+    if let Some(rest) = key.strip_prefix("[<0;") {
+        if rest.contains('M') {
+            return Some(("mouse_click", rest));
+        }
+        if key.ends_with('m') {
+            return Some(("mouse_release", rest));
+        }
+    }
+    if let Some(rest) = key.strip_prefix("[<32;") {
+        return Some(("mouse_drag", rest));
+    }
+    if let Some(rest) = key.strip_prefix("[<64;") {
+        return Some(("mouse_scroll_up", rest));
+    }
+    if let Some(rest) = key.strip_prefix("[<65;") {
+        return Some(("mouse_scroll_down", rest));
+    }
+    None
+}
+
+/// `(col, line)` from the post-prefix remainder (`"col;lineM"`).
+/// Mirrors btop_input.cpp:166-168 (`stoi` halves; `invalid_argument` /
+/// `out_of_range` → event cleared). Here failure is `None`.
+fn mouse_coords(rest: &str) -> Option<(i64, i64)> {
+    let semi = rest.find(';')?;
+    let mpos = rest.find('M').unwrap_or(rest.len());
+    let col = stoi_prefix(&rest[..semi]).ok()?;
+    let line = stoi_prefix(&rest[semi + 1..mpos]).ok()?;
+    Some((col as i64, line as i64))
+}
+
+/// Mouse (col, line) from raw SGR input. Shares parse core with decode_key.
+/// Returns None when not parseable (mirrors C++ catch→clear).
+/// Parses whenever the shape matches, independent of event name: C++ sets
+/// `mouse_pos` for any parsed event (btop_input.cpp:163-184), so click, drag,
+/// release and both scroll variants all yield positions. The filtering gate
+/// (only clicks pass while filtering) lives in decode_key/handle_key, not here.
+/// The caller threads the result into `InputState::mouse_pos`, mirroring the
+/// C++ `Input::mouse_pos` global that `process()` reads at :395.
+pub fn decode_mouse_pos(raw: &str) -> Option<(i64, i64)> {
+    // Single-ESC strip mirrors decode_key (len>1 guard keeps "\x1b" itself).
+    let key = if raw.len() > 1 {
+        raw.strip_prefix('\x1b').unwrap_or(raw)
+    } else {
+        raw
+    };
+    if !key.starts_with("[<") {
+        return None;
+    }
+    let (_, rest) = mouse_event_and_rest(key)?;
+    mouse_coords(rest)
 }
 
 #[cfg(test)]
@@ -199,6 +232,26 @@ mod tests {
         );
         assert_eq!(decode_key("\x1b[<64;5;5M", &input, &menu, true, false), "");
         assert_eq!(decode_key("a", &input, &menu, true, false), "a");
+    }
+
+    #[test]
+    fn mouse_pos_parses_all_variants() {
+        // Every SGR variant carries coords (btop_input.cpp:163-184 parses the
+        // position for any parsed event, independent of event name).
+        assert_eq!(decode_mouse_pos("\x1b[<0;12;6M"), Some((12, 6)));
+        assert_eq!(decode_mouse_pos("\x1b[<32;5;5M"), Some((5, 5)));
+        assert_eq!(decode_mouse_pos("\x1b[<0;5;5m"), Some((5, 5)));
+        assert_eq!(decode_mouse_pos("\x1b[<64;7;9M"), Some((7, 9)));
+        assert_eq!(decode_mouse_pos("\x1b[<65;7;9M"), Some((7, 9)));
+    }
+
+    #[test]
+    fn mouse_pos_rejects_garbage() {
+        assert_eq!(decode_mouse_pos(""), None);
+        assert_eq!(decode_mouse_pos("q"), None);
+        assert_eq!(decode_mouse_pos("\x1b[A"), None);
+        assert_eq!(decode_mouse_pos("\x1b[<9;5;5M"), None);
+        assert_eq!(decode_mouse_pos("\x1b[<0;5M"), None);
     }
 
     #[test]
