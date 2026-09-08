@@ -38,7 +38,9 @@
 //! left/right wrap-around (missing ⇒ len, --<0 ⇒ len-1, ++>len-1 ⇒ 0) is
 //! transcribed in the P3 sink per the SortPrev/SortNext contracts below.
 
+use crate::keys::{decode_key, decode_mouse_pos};
 use crate::textedit::TextEdit;
+use btop_tools::mouse::MouseMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MenuKind {
@@ -83,8 +85,17 @@ const SIG_TERM: i32 = 15;
 const SIG_KILL: i32 = 9;
 
 /// Every mutation/side effect process() triggers, as data. P3 sink executes.
-/// Proc/cpu/mem/net variants activate in Tasks 4-5.
-#[allow(dead_code)] // Task 5 removes this once every variant is constructed.
+/// Step-5 audit (against :214-641): every variant below is constructed by at
+/// least one process_key arm — Quit/ReloadConfig/ShowMenu/ToggleBox/
+/// CyclePreset (global), SetProcFilter/CommitFilter/CancelFilter/FlushConfig/
+/// SortPrev/SortNext/ToggleTree/CollapseAll/TogglePause/FollowSelected/
+/// FollowDetailed/Unfollow/ToggleReversed/TogglePerCore/ToggleMemBytes/
+/// ClearFilter/ProcSelectRow/ProcDetailOpen/ProcDetailClose/ExpandPid/
+/// CollapsePid/ToggleChildren/ProcScroll/SetDraggingScroll/SetBool/SetInt
+/// (proc), SetUpdateMs (cpu), ToggleIoMode/ToggleDisks/RecalcLayout (mem),
+/// CycleIface/ToggleNetSync/ToggleNetAuto/ZeroNetOffsets (net), Run
+/// (everywhere). OpenFilterEditor was deleted: the f/ arm mutates the editor
+/// directly and emits no intent (nothing left for the sink to intend).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Quit,
@@ -120,9 +131,6 @@ pub enum Action {
     /// st.old_filter is cleared — order matters, :314-316).
     SetProcFilter {
         text: String,
-    },
-    OpenFilterEditor {
-        current: String,
     },
     /// Sink: proc_sorting=prev entry of sort_vector (wrap to len-1) +
     /// update_following=true (:325-331).
@@ -202,16 +210,29 @@ pub enum Action {
         key: String,
         value: i64,
     },
+    /// Sink: flip io_mode (:579). Mem i arm.
     ToggleIoMode,
+    /// Sink: flip show_disks (:582). The d arm ALSO emits RecalcLayout
+    /// (Draw::calcSizes, :584) and Run{mem,no_update=false} — the layout
+    /// reflow is structural, hence no_update=false unlike every other arm.
     ToggleDisks,
+    /// Sink: selected_iface=next/prev entry of Net::interfaces with wrap
+    /// (:602-610) + Net::rescale=true (:611). dir=-1 for b (prev), +1 for n
+    /// (next). rescale/offset internals are sink duties. Emitted whenever
+    /// b/n matches — even with an empty/missing iface list (C++ keep_going
+    /// stays false, :600-613) — so the trailing Run fires regardless.
     CycleIface {
         dir: i8,
     },
+    /// Sink: flip net_sync + Net::rescale=true (:615-616). y arm.
     ToggleNetSync,
+    /// Sink: flip net_auto + Net::rescale=true (:619-620). a arm.
     ToggleNetAuto,
+    /// Sink: zero (or re-seed, when already zero) the download/upload offsets
+    /// of Net::current_net[selected_iface] (:623-632). Offset math is a sink
+    /// duty. Run{net,no_update=false} — like RecalcLayout, a data re-seed.
     ZeroNetOffsets,
 }
-
 pub trait ActionSink {
     fn emit(&mut self, action: Action);
 }
@@ -241,9 +262,22 @@ pub struct ProcGeom {
 /// View reads for dispatch. Every field mirrors the Config key / Proc global
 /// of the same name (selected_depth ⇒ selected_depth, scroll_pos ⇒
 /// Proc::scroll_pos); show_detailed_geom drives the y+8/height-8 adjust (:396).
+/// Box-gate flags (cpu_shown/mem_shown/net_shown, default false) mirror
+/// Cpu::shown/Mem::shown/Net::shown (:542/:573/:595); existing proc tests
+/// keep passing because proc_view() sets proc_shown=true explicitly while the
+/// new flags default to false. update_ms mirrors Config update_ms (cpu accel
+/// arms, :548-562). net_interfaces/net_selected mirror Net::interfaces /
+/// Net::selected_iface (kept flat — 30 fields total stays readable without
+/// sub-structs; regroup if the next plan pushes past ~30).
 #[derive(Debug, Default)]
 pub struct ViewState {
     pub proc_shown: bool,
+    pub cpu_shown: bool,
+    pub mem_shown: bool,
+    pub net_shown: bool,
+    pub update_ms: i64,
+    pub net_interfaces: Vec<String>,
+    pub net_selected: String,
     pub sorting: String,
     pub sorting_list: Vec<String>,
     pub tree: bool,
@@ -329,9 +363,11 @@ fn scroll_actions(sk: ScrollKey, redraw: bool) -> Vec<Action> {
     out
 }
 
-/// Pure dispatcher (global + proc branches; Task 5 appends cpu/mem/net).
+/// Pure dispatcher (global + proc + cpu/mem/net branches).
 /// Unknown keys fall through the global branch into the proc section (C++
 /// keep_going=true, :290-293); filtering skips the global branch entirely.
+/// Box sections run in C++ order proc → cpu → mem → net (:297/:542/:573/:595),
+/// each gated on its shown flag; the first match wins (C++ `return`s).
 pub fn process_key(
     key: &str,
     st: &mut InputState,
@@ -383,7 +419,21 @@ pub fn process_key(
             return actions;
         }
     }
-    // Task 5: cpu/mem/net sections append here (C++ falls through boxes).
+    if view.cpu_shown {
+        if let Some(actions) = cpu_key(key, st, view, now_ms) {
+            return actions;
+        }
+    }
+    if view.mem_shown {
+        if let Some(actions) = mem_key(key) {
+            return actions;
+        }
+    }
+    if view.net_shown {
+        if let Some(actions) = net_key(key) {
+            return actions;
+        }
+    }
     vec![]
 }
 
@@ -753,6 +803,150 @@ fn proc_mouse(
     None
 }
 
+/// Cpu-box section (btop_input.cpp:542-570). Some(vec) = handled (vec carries
+/// the single Run{cpu,true,true} — no_update stays true, redraw is set true
+/// on every handled press, :544-545/:554/:561). None = keep_going.
+/// HISTORY CONTRACT: C++ pushes the key into Input::history in get() BEFORE
+/// process() runs (:193-196), so by the time this fn sees `key`, st.history
+/// already ends with `key`. Unit tests must pre-fill st.history INCLUDING the
+/// current key (e.g. history=["+","+","+"] for a third "+"); handle_key upholds
+/// this ordering. NOTE: C++ history is a fixed 50-deque pre-filled with "";
+/// here it grows from empty and caps at 50, so all_of holds after N
+/// consecutive same-keys rather than 50 — accel arrives EARLIER than C++.
+/// Fail-safe direction (a stray key still downgrades to the single step),
+/// and the window+history shape verified by the Step-1 tests is unchanged.
+/// WINDOW MATH: C++ `last_press >= time_ms() - 200` is uint64 arithmetic;
+/// mirrored with wrapping_sub so now_ms<200 wraps identically. Consequence:
+/// presses in the first 200ms after boot never accelerate (last=0 < huge
+/// wrapped bound) — faithful, not a bug. st.last_press_ms updates on handled
+/// presses ONLY (gated-out keys leave it untouched).
+fn cpu_key(key: &str, st: &mut InputState, view: &ViewState, now_ms: u64) -> Option<Vec<Action>> {
+    if (key == "+" || key == "=") && view.update_ms <= 86_399_900 {
+        // :548-554. "=" rides the + arm but can never accelerate (history
+        // all_of demands "+" while history ends with "=").
+        let accel = view.update_ms <= 86_399_000
+            && st.last_press_ms >= now_ms.wrapping_sub(200)
+            && st.history.iter().all(|s| s == "+");
+        let add = if accel { 1000 } else { 100 };
+        st.last_press_ms = now_ms;
+        Some(vec![
+            Action::SetUpdateMs {
+                ms: view.update_ms + add,
+            },
+            Action::Run {
+                target: RunTarget::Cpu,
+                no_update: true,
+                redraw: true,
+            },
+        ])
+    } else if key == "-" && view.update_ms >= 200 {
+        // :556-562, mirror (accel sub-gate >= 2000).
+        let accel = view.update_ms >= 2000
+            && st.last_press_ms >= now_ms.wrapping_sub(200)
+            && st.history.iter().all(|s| s == "-");
+        let sub = if accel { 1000 } else { 100 };
+        st.last_press_ms = now_ms;
+        Some(vec![
+            Action::SetUpdateMs {
+                ms: view.update_ms - sub,
+            },
+            Action::Run {
+                target: RunTarget::Cpu,
+                no_update: true,
+                redraw: true,
+            },
+        ])
+    } else {
+        None
+    }
+}
+
+/// Mem-box section (:573-592). i flips io_mode (:579); d flips show_disks +
+/// recalcs layout (:581-584, hence no_update=false). Else keep_going (None).
+fn mem_key(key: &str) -> Option<Vec<Action>> {
+    if key == "i" {
+        Some(vec![
+            Action::ToggleIoMode,
+            Action::Run {
+                target: RunTarget::Mem,
+                no_update: true,
+                redraw: true,
+            },
+        ])
+    } else if key == "d" {
+        Some(vec![
+            Action::ToggleDisks,
+            Action::RecalcLayout,
+            Action::Run {
+                target: RunTarget::Mem,
+                no_update: false,
+                redraw: true,
+            },
+        ])
+    } else {
+        None
+    }
+}
+
+/// Net-box section (:595-641). b=prev(dir=-1), n=next(dir=+1) with wrap
+/// (:604-609 — b decrements, n increments); y/a flip net_sync/net_auto;
+/// z re-seeds offsets (no_update=false, :633). rescale/offset internals and
+/// the empty-list no-op are sink duties (CycleIface contract); the Run fires
+/// whenever the arm matches, even with no interfaces (C++ keep_going=false).
+fn net_key(key: &str) -> Option<Vec<Action>> {
+    let run = Action::Run {
+        target: RunTarget::Net,
+        no_update: true,
+        redraw: true,
+    };
+    if key == "b" {
+        Some(vec![Action::CycleIface { dir: -1 }, run])
+    } else if key == "n" {
+        Some(vec![Action::CycleIface { dir: 1 }, run])
+    } else if key == "y" {
+        Some(vec![Action::ToggleNetSync, run])
+    } else if key == "a" {
+        Some(vec![Action::ToggleNetAuto, run])
+    } else if key == "z" {
+        Some(vec![
+            Action::ZeroNetOffsets,
+            Action::Run {
+                target: RunTarget::Net,
+                no_update: false,
+                redraw: true,
+            },
+        ])
+    } else {
+        None
+    }
+}
+
+/// Full get()+process() glue for P3/P4 (C++ Input::get :123-199 + process
+/// :214-647). Decodes the key, threads the mouse position ALWAYS (even None —
+/// a stale pos must never linger for a later mouse arm), appends history
+/// (BEFORE process, preserving the :193-196 order the cpu accel arm depends
+/// on; capped at 50), then dispatches. Empty raws decode to "" and
+/// process_key short-circuits to empty — but they still shift history (C++
+/// skips empty pushes; fail-safe direction: accel needs all_same, so a ""
+/// entry only ever downgrades accel to the single step).
+pub fn handle_key(
+    raw: &str,
+    input_maps: &[MouseMap],
+    menu_maps: &[MouseMap],
+    st: &mut InputState,
+    view: &ViewState,
+    editor: &mut TextEdit,
+    now_ms: u64,
+) -> Vec<Action> {
+    let key = decode_key(raw, input_maps, menu_maps, st.filtering, st.menu_active);
+    st.mouse_pos = decode_mouse_pos(raw);
+    st.history.push_back(key.clone());
+    while st.history.len() > 50 {
+        st.history.pop_front();
+    }
+    process_key(&key, st, view, editor, now_ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,6 +984,12 @@ mod tests {
     fn proc_view() -> ViewState {
         ViewState {
             proc_shown: true,
+            cpu_shown: false,
+            mem_shown: false,
+            net_shown: false,
+            update_ms: 0,
+            net_interfaces: Vec::new(),
+            net_selected: String::new(),
             sorting: "cpu lazy".to_string(),
             sorting_list: vec![
                 "pid".to_string(),
@@ -1833,5 +2033,356 @@ mod tests {
             process_key("e", &mut st, &ViewState::default(), &mut ed, 0),
             Vec::<Action>::new()
         );
+    }
+
+    //? Cpu branch (:542-570). HISTORY CONTRACT (see cpu_key docs): get()
+    // pushes the key BEFORE process (:193-196), so st.history must already
+    // INCLUDE the current key when calling process_key directly — every test
+    // below pre-fills history ending with the pressed key. handle_key upholds
+    // this ordering (covered by the integration test at the bottom).
+
+    fn cpu_view(update_ms: i64) -> ViewState {
+        ViewState {
+            proc_shown: false,
+            cpu_shown: true,
+            update_ms,
+            ..proc_view()
+        }
+    }
+
+    fn histed(keys: &[&str], last_press_ms: u64) -> InputState {
+        InputState {
+            history: keys.iter().map(|s| s.to_string()).collect(),
+            last_press_ms,
+            ..Default::default()
+        }
+    }
+
+    fn cpu_run() -> Action {
+        Action::Run {
+            target: RunTarget::Cpu,
+            no_update: true,
+            redraw: true,
+        }
+    }
+
+    #[test]
+    fn cpu_accel_up_triple_plus() {
+        // update 2000 (<= 86399000) + inside 200ms window + history all "+"
+        // ⇒ +1000 (:549-552). last_press advances to now.
+        let view = cpu_view(2000);
+        let mut st = histed(&["+", "+", "+"], 1000);
+        let mut ed = TextEdit::new(String::new(), false);
+        assert_eq!(
+            process_key("+", &mut st, &view, &mut ed, 1100),
+            vec![Action::SetUpdateMs { ms: 3000 }, cpu_run()]
+        );
+        assert_eq!(st.last_press_ms, 1100);
+    }
+
+    #[test]
+    fn cpu_single_up_without_window_or_history() {
+        // Fresh press (last=0, far outside the window) ⇒ +100 even with a
+        // clean single-"+" history.
+        let view = cpu_view(2000);
+        let mut st = histed(&["+"], 0);
+        let mut ed = TextEdit::new(String::new(), false);
+        assert_eq!(
+            process_key("+", &mut st, &view, &mut ed, 1000),
+            vec![Action::SetUpdateMs { ms: 2100 }, cpu_run()]
+        );
+        // Polluted history (a stray key) ⇒ +100 even inside the window.
+        let mut st = histed(&["x", "+"], 950);
+        assert_eq!(
+            process_key("+", &mut st, &view, &mut ed, 1000),
+            vec![Action::SetUpdateMs { ms: 2100 }, cpu_run()]
+        );
+    }
+
+    #[test]
+    fn cpu_equals_rides_plus_arm_without_accel() {
+        // "=" shares the + arm (:548) but history ends with "=" ⇒ all_of("+")
+        // fails ⇒ always +100, even inside the window.
+        let view = cpu_view(2000);
+        let mut st = histed(&["=", "=", "="], 950);
+        let mut ed = TextEdit::new(String::new(), false);
+        assert_eq!(
+            process_key("=", &mut st, &view, &mut ed, 1000),
+            vec![Action::SetUpdateMs { ms: 2100 }, cpu_run()]
+        );
+        assert_eq!(st.last_press_ms, 1000); // handled ⇒ press recorded
+    }
+
+    #[test]
+    fn cpu_accel_down_and_single_down() {
+        let view = cpu_view(5000);
+        let mut st = histed(&["-", "-"], 1000);
+        let mut ed = TextEdit::new(String::new(), false);
+        assert_eq!(
+            process_key("-", &mut st, &view, &mut ed, 1100),
+            vec![Action::SetUpdateMs { ms: 4000 }, cpu_run()]
+        );
+        // Below the 2000 accel sub-gate (:557) ⇒ single step even with
+        // window + clean history.
+        let low = cpu_view(500);
+        let mut st = histed(&["-", "-"], 1000);
+        assert_eq!(
+            process_key("-", &mut st, &low, &mut ed, 1100),
+            vec![Action::SetUpdateMs { ms: 400 }, cpu_run()]
+        );
+    }
+
+    #[test]
+    fn cpu_gates_and_bounds() {
+        let mut ed = TextEdit::new(String::new(), false);
+        // Below floor: update 100 (< 200, :556) ⇒ keep_going ⇒ empty, and the
+        // rejected press must NOT touch last_press_ms.
+        let floor = cpu_view(100);
+        let mut st = histed(&["-"], 777);
+        assert_eq!(
+            process_key("-", &mut st, &floor, &mut ed, 1000),
+            Vec::<Action>::new()
+        );
+        assert_eq!(st.last_press_ms, 777);
+        // Above ceiling: update 86400000 (> 86399900, :548) ⇒ empty.
+        let ceil = cpu_view(86_400_000);
+        let mut st = histed(&["+"], 777);
+        assert_eq!(
+            process_key("+", &mut st, &ceil, &mut ed, 1000),
+            Vec::<Action>::new()
+        );
+        assert_eq!(st.last_press_ms, 777);
+        // Upper edge: 86399900 still handled, but past the accel sub-gate
+        // (> 86399000) ⇒ +100 lands exactly on 86400000.
+        let edge = cpu_view(86_399_900);
+        let mut st = histed(&["+", "+", "+"], 950);
+        assert_eq!(
+            process_key("+", &mut st, &edge, &mut ed, 1000),
+            vec![Action::SetUpdateMs { ms: 86_400_000 }, cpu_run()]
+        );
+        // Hidden box ⇒ empty (gate :542).
+        let mut st = InputState::default();
+        assert_eq!(
+            process_key("+", &mut st, &ViewState::default(), &mut ed, 1000),
+            Vec::<Action>::new()
+        );
+    }
+
+    //? Mem branch (:573-592).
+
+    fn mem_view() -> ViewState {
+        ViewState {
+            proc_shown: false,
+            mem_shown: true,
+            ..proc_view()
+        }
+    }
+
+    #[test]
+    fn mem_io_and_disks_arms() {
+        let view = mem_view();
+        let mut st = InputState::default();
+        let mut ed = TextEdit::new(String::new(), false);
+        // i ⇒ flip io_mode + Run{mem,true,true} (:578-579).
+        assert_eq!(
+            process_key("i", &mut st, &view, &mut ed, 0),
+            vec![
+                Action::ToggleIoMode,
+                Action::Run {
+                    target: RunTarget::Mem,
+                    no_update: true,
+                    redraw: true,
+                },
+            ]
+        );
+        // d ⇒ flip show_disks + calcSizes + Run{mem,false,true} (:581-584).
+        assert_eq!(
+            process_key("d", &mut st, &view, &mut ed, 0),
+            vec![
+                Action::ToggleDisks,
+                Action::RecalcLayout,
+                Action::Run {
+                    target: RunTarget::Mem,
+                    no_update: false,
+                    redraw: true,
+                },
+            ]
+        );
+        // Anything else ⇒ keep_going ⇒ empty.
+        assert_eq!(
+            process_key("x", &mut st, &view, &mut ed, 0),
+            Vec::<Action>::new()
+        );
+        // Hidden box ⇒ empty (gate :573).
+        assert_eq!(
+            process_key("i", &mut st, &ViewState::default(), &mut ed, 0),
+            Vec::<Action>::new()
+        );
+    }
+
+    //? Net branch (:595-641).
+
+    fn net_view() -> ViewState {
+        ViewState {
+            proc_shown: false,
+            net_shown: true,
+            net_interfaces: vec!["eth0".to_string(), "wlan0".to_string()],
+            net_selected: "eth0".to_string(),
+            ..proc_view()
+        }
+    }
+
+    fn net_run() -> Action {
+        Action::Run {
+            target: RunTarget::Net,
+            no_update: true,
+            redraw: true,
+        }
+    }
+
+    #[test]
+    fn net_cycle_dirs_split_prev_next() {
+        // b=prev(-1), n=next(+1) per :604-609 (b decrements, n increments).
+        // Index wrap math (v_index miss, ±1 wrap) is transcribed in the P3
+        // sink per the CycleIface contract — here only the direction split
+        // and the trailing Run are pinned.
+        let view = net_view();
+        let mut st = InputState::default();
+        let mut ed = TextEdit::new(String::new(), false);
+        assert_eq!(
+            process_key("b", &mut st, &view, &mut ed, 0),
+            vec![Action::CycleIface { dir: -1 }, net_run()]
+        );
+        assert_eq!(
+            process_key("n", &mut st, &view, &mut ed, 0),
+            vec![Action::CycleIface { dir: 1 }, net_run()]
+        );
+    }
+
+    #[test]
+    fn net_sync_auto_zero_arms() {
+        let view = net_view();
+        let mut st = InputState::default();
+        let mut ed = TextEdit::new(String::new(), false);
+        // y/a ⇒ flip + Run{net,true,true} (:614-621).
+        assert_eq!(
+            process_key("y", &mut st, &view, &mut ed, 0),
+            vec![Action::ToggleNetSync, net_run()]
+        );
+        assert_eq!(
+            process_key("a", &mut st, &view, &mut ed, 0),
+            vec![Action::ToggleNetAuto, net_run()]
+        );
+        // z ⇒ offsets re-seed + Run{net,false,true} (:622-633). Offset math
+        // is a sink duty (ZeroNetOffsets contract).
+        assert_eq!(
+            process_key("z", &mut st, &view, &mut ed, 0),
+            vec![
+                Action::ZeroNetOffsets,
+                Action::Run {
+                    target: RunTarget::Net,
+                    no_update: false,
+                    redraw: true,
+                },
+            ]
+        );
+        // Anything else ⇒ keep_going ⇒ empty; hidden box ⇒ empty (:595).
+        assert_eq!(
+            process_key("x", &mut st, &view, &mut ed, 0),
+            Vec::<Action>::new()
+        );
+        assert_eq!(
+            process_key("n", &mut st, &ViewState::default(), &mut ed, 0),
+            Vec::<Action>::new()
+        );
+    }
+
+    //? handle_key glue (get :123-199 + process :214-647).
+
+    #[test]
+    fn handle_key_caps_history_at_50() {
+        // 55 single-char pushes ⇒ len 50, front is the 6th push ("5").
+        let mut st = InputState::default();
+        let mut ed = TextEdit::new(String::new(), false);
+        let view = ViewState::default();
+        let nomaps: Vec<MouseMap> = vec![];
+        for i in 0..55 {
+            handle_key(
+                &(i % 10).to_string(),
+                &nomaps,
+                &nomaps,
+                &mut st,
+                &view,
+                &mut ed,
+                0,
+            );
+        }
+        assert_eq!(st.history.len(), 50);
+        assert_eq!(st.history.front().unwrap(), "5");
+        assert_eq!(st.history.back().unwrap(), "4");
+    }
+
+    #[test]
+    fn handle_key_empty_raw_yields_empty() {
+        let mut st = InputState::default();
+        let mut ed = TextEdit::new(String::new(), false);
+        let nomaps: Vec<MouseMap> = vec![];
+        assert_eq!(
+            handle_key(
+                "",
+                &nomaps,
+                &nomaps,
+                &mut st,
+                &ViewState::default(),
+                &mut ed,
+                0
+            ),
+            Vec::<Action>::new()
+        );
+    }
+
+    #[test]
+    fn handle_key_threads_mouse_pos_always() {
+        // Click raw ⇒ Some; plain key ⇒ None (stale pos must never linger).
+        let mut st = InputState::default();
+        let mut ed = TextEdit::new(String::new(), false);
+        let nomaps: Vec<MouseMap> = vec![];
+        handle_key(
+            "\x1b[<0;12;6M",
+            &nomaps,
+            &nomaps,
+            &mut st,
+            &ViewState::default(),
+            &mut ed,
+            0,
+        );
+        assert_eq!(st.mouse_pos, Some((12, 6)));
+        handle_key(
+            "a",
+            &nomaps,
+            &nomaps,
+            &mut st,
+            &ViewState::default(),
+            &mut ed,
+            0,
+        );
+        assert_eq!(st.mouse_pos, None);
+    }
+
+    #[test]
+    fn handle_key_accel_integration_orders_history_first() {
+        // Three rapid "+" through handle_key with controlled now_ms: the
+        // third sees history ["+","+","+"] (current INCLUDED, :193-196
+        // ordering) + window hit ⇒ SetUpdateMs(+1000). Proves the glue
+        // preserves the order cpu_key depends on.
+        let view = cpu_view(2000);
+        let mut st = InputState::default();
+        let mut ed = TextEdit::new(String::new(), false);
+        let nomaps: Vec<MouseMap> = vec![];
+        handle_key("+", &nomaps, &nomaps, &mut st, &view, &mut ed, 1000);
+        handle_key("+", &nomaps, &nomaps, &mut st, &view, &mut ed, 1100);
+        let third = handle_key("+", &nomaps, &nomaps, &mut st, &view, &mut ed, 1200);
+        assert_eq!(third, vec![Action::SetUpdateMs { ms: 3000 }, cpu_run()]);
+        assert_eq!(st.last_press_ms, 1200);
     }
 }
