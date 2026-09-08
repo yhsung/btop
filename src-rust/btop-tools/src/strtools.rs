@@ -103,6 +103,25 @@ pub fn wide_ulen(s: &str) -> usize {
     s.chars().map(crate::wcwidth::width).sum()
 }
 
+/// Number of UTF-8 chars in `s`, or terminal columns when `wide`.
+/// Mirrors Tools::ulen (src/btop_tools.hpp:177-179): narrow counts bytes
+/// where `(b & 0xC0) != 0x80` (lead bytes + ASCII, i.e. scalar count for
+/// valid UTF-8); wide delegates to [`wide_ulen`].
+pub fn ulen(s: &str, wide: bool) -> usize {
+    if wide {
+        wide_ulen(s)
+    } else {
+        s.bytes().filter(|b| b & 0xC0 != 0x80).count()
+    }
+}
+
+/// True when every char is an ASCII digit; empty is vacuously true.
+/// Mirrors Tools::isint (src/btop_tools.hpp:278-280),
+/// `std::ranges::all_of(str, ::isdigit)`.
+pub fn isint(s: &str) -> bool {
+    s.chars().all(|c| c.is_ascii_digit())
+}
+
 /// Truncate to `len` chars, or to `len` columns when `wide`.
 /// Mirrors Tools::uresize (src/btop_tools.cpp:269): the wide path keeps the
 /// longest prefix whose column width (via [`wide_ulen`]) fits, matching the
@@ -518,5 +537,22 @@ mod tests {
         assert_eq!(trans("a  b"), "a\x1b[2Cb");
         assert_eq!(trans("a b c"), "a\x1b[1Cb\x1b[1Cc");
         assert_eq!(trans("a "), "a\x1b[1C");
+    }
+
+    #[test]
+    fn ulen_counts_chars_or_columns() {
+        assert_eq!(ulen("", false), 0);
+        assert_eq!(ulen("abc", false), 3);
+        assert_eq!(ulen("a中b", false), 3);
+        assert_eq!(ulen("a中b", true), 4);
+    }
+
+    #[test]
+    fn isint_ascii_digits_empty_true() {
+        assert!(isint(""));
+        assert!(isint("0123"));
+        assert!(!isint("12a"));
+        assert!(!isint(" 5"));
+        assert!(!isint("５")); // full-width digit is not ASCII
     }
 }
