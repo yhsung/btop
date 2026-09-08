@@ -71,6 +71,8 @@ fn next_value(it: &mut std::slice::Iter<'_, String>) -> Result<String, i32> {
 /// non-digit). Accumulate in i64 and range-check to i32.
 ///
 /// Shared with `btop-input` for SGR mouse coordinates (btop_input.cpp).
+/// Unit error is intentional: callers only branch on ok/err (C++ throws).
+#[allow(clippy::result_unit_err)]
 pub fn stoi_prefix(s: &str) -> Result<i32, ()> {
     let b = s.as_bytes();
     let mut i = 0;

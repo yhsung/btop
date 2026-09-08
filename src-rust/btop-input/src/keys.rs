@@ -33,15 +33,19 @@ pub fn decode_key(raw: &str, input_maps: &[MouseMap], menu_maps: &[MouseMap], fi
             if mouse_event == "mouse_click" { return mouse_event.to_string(); }
             else { return String::new(); }
         }
+        // Position parse: col/line are i32 (stoi_prefix). Compare in i64 (lossless;
+        // narrowing the rect to i32 could truncate absurd coords). For release
+        // events (trailing lowercase 'm'), find('M') misses and mpos falls back
+        // to view.len() — tolerated because stoi_prefix stops at non-digits.
         let Some(semi) = view.find(';') else { return String::new(); };
         let mpos = view.find('M').unwrap_or(view.len());
         let (Ok(col), Ok(line)) = (stoi_prefix(&view[..semi]), stoi_prefix(&view[semi + 1..mpos])) else { return String::new(); };
-        // col/line are i32 (stoi_prefix); rect fields may be i64 — cast rect to i32 for compare (document).
+        let (col, line) = (col as i64, line as i64);
         let mut key = mouse_event.to_string();
         if key == "mouse_click" || key == "mouse_drag" {
             let maps = if menu_active { menu_maps } else { input_maps };
             for m in maps {
-                if col >= m.x as i32 && col < m.x as i32 + m.w as i32 && line >= m.y as i32 && line < m.y as i32 + m.h as i32 {
+                if col >= m.x && col < m.x + m.w && line >= m.y && line < m.y + m.h {
                     key = m.action.clone();
                     break;
                 }
