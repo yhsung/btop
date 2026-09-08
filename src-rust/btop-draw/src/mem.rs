@@ -583,7 +583,11 @@ fn render_disks_io(
                     ""
                 },
                 if comb_val > 0 {
-                    format!("{}{}", mv_r(1), human_bytes(comb_val as u64, true, f.base_10))
+                    format!(
+                        "{}{}",
+                        mv_r(1),
+                        human_bytes(comb_val as u64, true, f.base_10)
+                    )
                 } else {
                     "RW".to_string()
                 },

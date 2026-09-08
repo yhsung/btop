@@ -591,10 +591,7 @@ fn gpu_layout(w: usize, h: usize) -> GpuGeom {
 
 fn fixed_gpu_percent() -> HashMap<String, Vec<i64>> {
     [
-        (
-            "gpu-totals",
-            vec![20, 25, 30, 35, 40, 45, 50, 55, 60, 55],
-        ),
+        ("gpu-totals", vec![20, 25, 30, 35, 40, 45, 50, 55, 60, 55]),
         (
             "gpu-vram-totals",
             vec![40, 41, 42, 43, 44, 45, 46, 47, 48, 49],
@@ -798,7 +795,10 @@ fn gpu_smoke_vram_variants() {
     only_used.supported.mem_total = false;
     let out2 = draw_gpu(&only_used, &layout, &theme);
     assert!(out2.contains("VRAM usage:"), "single usage line missing");
-    assert!(out2.contains("VRAM clock:"), "single-line mem clock missing");
+    assert!(
+        out2.contains("VRAM clock:"),
+        "single-line mem clock missing"
+    );
     let mut neither = gpu_test_input(&percent, &temp, &mem_util);
     neither.supported.mem_total = false;
     neither.supported.mem_used = false;
@@ -830,7 +830,10 @@ fn gpu_smoke_no_pcie() {
     assert!(!draw_gpu(&neg, &layout, &theme).contains("TX:"));
     let full = gpu_test_input(&percent, &temp, &mem_util);
     let out = draw_gpu(&full, &layout, &theme);
-    assert!(out.contains("TX:") && out.contains("RX:"), "pcie footer missing");
+    assert!(
+        out.contains("TX:") && out.contains("RX:"),
+        "pcie footer missing"
+    );
 }
 
 #[test]

@@ -49,16 +49,16 @@ fn clamp_i64(v: i64, lo: i64, hi: i64) -> i64 {
 /// section renders in `gpu_S0/S1.ans`; the smoke tests flip each one off.
 #[derive(Debug, Clone)]
 pub struct GpuSupported {
-    pub gpu_utilization: bool,   // :1085/:1114 util graphs + GPU meter
-    pub mem_utilization: bool,   // :1102/:1177 vram utilization graph
-    pub gpu_clock: bool,         // :1133 gpu clock title
-    pub mem_clock: bool,         // :1183/:1194 vram clock title
-    pub pwr_usage: bool,         // :1100/:1140 PWR meter
-    pub pwr_state: bool,         // :1101/:1144 P-state suffix
-    pub temp_info: bool,         // :1068/:1098 temp graph + readout
-    pub mem_total: bool,         // :1104/:1159 vram section
-    pub mem_used: bool,          // :1104/:1159 vram section
-    pub pcie_txrx: bool,         // :1205 TX/RX footer
+    pub gpu_utilization: bool,     // :1085/:1114 util graphs + GPU meter
+    pub mem_utilization: bool,     // :1102/:1177 vram utilization graph
+    pub gpu_clock: bool,           // :1133 gpu clock title
+    pub mem_clock: bool,           // :1183/:1194 vram clock title
+    pub pwr_usage: bool,           // :1100/:1140 PWR meter
+    pub pwr_state: bool,           // :1101/:1144 P-state suffix
+    pub temp_info: bool,           // :1068/:1098 temp graph + readout
+    pub mem_total: bool,           // :1104/:1159 vram section
+    pub mem_used: bool,            // :1104/:1159 vram section
+    pub pcie_txrx: bool,           // :1205 TX/RX footer
     pub encoder_utilization: bool, // :1106/:1150 ENC meter
     pub decoder_utilization: bool, // :1150 DEC meter
 }
@@ -129,7 +129,7 @@ pub struct GpuDrawInput<'a> {
     pub pwr_state: i64,
     /// `gpu.temp` full history (:1099/:1124-1126).
     pub temp: &'a [i64],
-    pub temp_max: i64, // :1099/:1125 (harness 95; used raw, no :604-style guard)
+    pub temp_max: i64,  // :1099/:1125 (harness 95; used raw, no :604-style guard)
     pub mem_total: u64, // :1173/:1191 bytes
     pub mem_used: u64,  // :1162/:1192 bytes
     /// `gpu.mem_utilization_percent` full history (:1103/:1180).
@@ -293,7 +293,7 @@ fn render_util(
     }
     out += &pal.div_line;
     out += V_LINE; // :1129
-    // Clock title (:1133-1137; bare glyphs, no box-color prefix).
+                   // Clock title (:1133-1137; bare glyphs, no box-color prefix).
     if input.supported.gpu_clock {
         let clock = input.gpu_clock_speed.to_string();
         out += &mv_to(b_y, b_x + geom.b_width - 12);
@@ -359,11 +359,7 @@ fn render_pwr(
     } else {
         0
     };
-    out += &format!(
-        "{:>5.prec$}",
-        input.pwr_usage as f64 / 1000.0,
-        prec = prec
-    );
+    out += &format!("{:>5.prec$}", input.pwr_usage as f64 / 1000.0, prec = prec);
     out += &pal.main_fg;
     out += "W";
     // P-state (:1144-1145; 32 is NVML_PSTATE_UNKNOWN — hidden).
@@ -446,8 +442,8 @@ fn render_vram(
     out += &mv_to(geom.b_y + rows_used, geom.b_x);
     if s.mem_total && s.mem_used {
         let used_str = human_bytes(input.mem_used, false, f.base_10); // :1162
-        // :1164 — the leading `(mem_total or mem_used)` factor is 1 on
-        // this arm (both true); kept as a bool-to-int product, verbatim.
+                                                                      // :1164 — the leading `(mem_total or mem_used)` factor is 1 on
+                                                                      // this arm (both true); kept as a bool-to-int product, verbatim.
         let offset = (s.mem_total || s.mem_used) as i64
             * (1 + 2 * (s.mem_total && s.mem_used) as i64 + 2 * s.mem_utilization as i64);
         out += &pal.div_line;
@@ -473,8 +469,8 @@ fn render_vram(
         out += &pal.title;
         out += "Used:";
         out += &pal.div_line;
-        out += &H_LINE
-            .repeat((b_width / 2 + b_width % 2 - 9 - used_str.len() as i64).max(0) as usize);
+        out +=
+            &H_LINE.repeat((b_width / 2 + b_width % 2 - 9 - used_str.len() as i64).max(0) as usize);
         out += &pal.title;
         out += &used_str;
         out += &pal.div_line;
@@ -527,7 +523,12 @@ fn render_vram(
             out += &mv_l(b_width / 2 - 1);
             out += &mv_u(1);
             out += &rjust_b(
-                &input.mem_utilization.last().copied().unwrap_or(0).to_string(),
+                &input
+                    .mem_utilization
+                    .last()
+                    .copied()
+                    .unwrap_or(0)
+                    .to_string(),
                 3,
             );
             out += "%";
@@ -665,7 +666,7 @@ pub fn draw_gpu(input: &GpuDrawInput, geom: &GpuGeom, theme: &HashMap<String, St
 
     let show_temps = input.supported.temp_info && f.check_temp; // :1068
     let single_graph = !f.mirror_graph; // :1073
-    // Local draw height (:1075) — NOT the box height.
+                                        // Local draw height (:1075) — NOT the box height.
     let height = geom.b_inner_h + 2;
     // Graph heights (:1082-1083; b_full_h is b_height_vec post-:2425).
     let graph_up_height = if single_graph {
