@@ -44,10 +44,15 @@ runner+wiring → P4 app; P1 is the dependency leaf.
   from `process()` branch order; mouse hit-test vectors (click/drag/scroll, mapped and
   unmapped rects, menu-active vs input mappings).
 
-## 5. TextEdit + boundaries (S3 approved)
+## 5. TextEdit + boundaries (S3 approved, CORRECTED 2026-09-06)
 
-- Cursor insert/delete/home/end, blink phase from injected `now_ms` (mockable, never
-  wall-clock), mouse click-to-cursor. Unit tests incl. blink-phase edges.
+- TextEdit = `{text, pos (bytes), upos (chars), numeric}`; `command()` key handling
+  verbatim (incl. UTF-8 multibyte paths via uresize/ulen); `render(limit)` verbatim
+  (window + underline cursor block, always visible).
+- CORRECTION: C++ has NO blink phase and NO mouse positioning (verified: zero
+  `blink` matches in src/; TextEdit API is command/render/clear only). The earlier
+  "blink state machine / mouse定位" wording was wrong — struck. No clock injection
+  needed; no cursor field beyond pos/upos for M4.
 - `proc_filtering==true` short-circuit preserved and tested.
 - fd/pselect/SIGUSR1 explicitly out (P4); no terminal syscalls in this crate.
 
