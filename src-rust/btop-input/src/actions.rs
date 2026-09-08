@@ -237,7 +237,7 @@ pub trait ActionSink {
     fn emit(&mut self, action: Action);
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct InputState {
     pub filtering: bool,
     pub vim_keys: bool,
@@ -249,6 +249,25 @@ pub struct InputState {
     /// Threaded by the caller from keys::decode_mouse_pos(raw); mirrors the
     /// C++ Input::mouse_pos global read at :395. None ⇒ mouse arms keep_going.
     pub mouse_pos: Option<(i64, i64)>,
+}
+
+/// Faithful mirror of C++ `deque<string> history(50, "")` (btop_input.cpp:91):
+/// history starts as 50 empty strings, so accel needs 50 CONSECUTIVE "+"/"-"
+/// (all_of over the full deque). The push/pop window in handle_key
+/// (push_back + pop_front while len > 50) preserves the 50-window from here.
+impl Default for InputState {
+    fn default() -> Self {
+        Self {
+            filtering: false,
+            vim_keys: false,
+            menu_active: false,
+            history: std::collections::VecDeque::from(vec![String::new(); 50]),
+            last_press_ms: 0,
+            old_filter: String::new(),
+            dragging_scroll: false,
+            mouse_pos: None,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -267,7 +286,7 @@ pub struct ProcGeom {
 /// keep passing because proc_view() sets proc_shown=true explicitly while the
 /// new flags default to false. update_ms mirrors Config update_ms (cpu accel
 /// arms, :548-562). net_interfaces/net_selected mirror Net::interfaces /
-/// Net::selected_iface (kept flat — 30 fields total stays readable without
+/// Net::selected_iface (kept flat — 29 fields total stays readable without
 /// sub-structs; regroup if the next plan pushes past ~30).
 #[derive(Debug, Default)]
 pub struct ViewState {
@@ -808,13 +827,12 @@ fn proc_mouse(
 /// on every handled press, :544-545/:554/:561). None = keep_going.
 /// HISTORY CONTRACT: C++ pushes the key into Input::history in get() BEFORE
 /// process() runs (:193-196), so by the time this fn sees `key`, st.history
-/// already ends with `key`. Unit tests must pre-fill st.history INCLUDING the
-/// current key (e.g. history=["+","+","+"] for a third "+"); handle_key upholds
-/// this ordering. NOTE: C++ history is a fixed 50-deque pre-filled with "";
-/// here it grows from empty and caps at 50, so all_of holds after N
-/// consecutive same-keys rather than 50 — accel arrives EARLIER than C++.
-/// Fail-safe direction (a stray key still downgrades to the single step),
-/// and the window+history shape verified by the Step-1 tests is unchanged.
+/// already ends with `key`. Unit tests must pre-fill st.history as a faithful
+/// 50-entry window INCLUDING the current key (e.g. 50 "+" for an accelerated
+/// press); handle_key upholds this ordering. C++ history is a fixed 50-deque
+/// pre-filled with "" (:91), mirrored by InputState::default — so accel needs
+/// 50 CONSECUTIVE same-keys. The `!is_empty` guard is cheap defense against a
+/// directly-constructed empty history (all_of over empty is vacuously true).
 /// WINDOW MATH: C++ `last_press >= time_ms() - 200` is uint64 arithmetic;
 /// mirrored with wrapping_sub so now_ms<200 wraps identically. Consequence:
 /// presses in the first 200ms after boot never accelerate (last=0 < huge
@@ -826,6 +844,7 @@ fn cpu_key(key: &str, st: &mut InputState, view: &ViewState, now_ms: u64) -> Opt
         // all_of demands "+" while history ends with "=").
         let accel = view.update_ms <= 86_399_000
             && st.last_press_ms >= now_ms.wrapping_sub(200)
+            && !st.history.is_empty()
             && st.history.iter().all(|s| s == "+");
         let add = if accel { 1000 } else { 100 };
         st.last_press_ms = now_ms;
@@ -843,6 +862,7 @@ fn cpu_key(key: &str, st: &mut InputState, view: &ViewState, now_ms: u64) -> Opt
         // :556-562, mirror (accel sub-gate >= 2000).
         let accel = view.update_ms >= 2000
             && st.last_press_ms >= now_ms.wrapping_sub(200)
+            && !st.history.is_empty()
             && st.history.iter().all(|s| s == "-");
         let sub = if accel { 1000 } else { 100 };
         st.last_press_ms = now_ms;
@@ -925,10 +945,10 @@ fn net_key(key: &str) -> Option<Vec<Action>> {
 /// :214-647). Decodes the key, threads the mouse position ALWAYS (even None —
 /// a stale pos must never linger for a later mouse arm), appends history
 /// (BEFORE process, preserving the :193-196 order the cpu accel arm depends
-/// on; capped at 50), then dispatches. Empty raws decode to "" and
-/// process_key short-circuits to empty — but they still shift history (C++
-/// skips empty pushes; fail-safe direction: accel needs all_same, so a ""
-/// entry only ever downgrades accel to the single step).
+/// on; capped at 50) when the decoded key is non-empty (C++ :193 skips empty
+/// pushes, so an undecodable raw never pollutes the accel streak), then
+/// dispatches. Empty raws decode to "" and process_key short-circuits to
+/// empty with history untouched.
 pub fn handle_key(
     raw: &str,
     input_maps: &[MouseMap],
@@ -940,9 +960,11 @@ pub fn handle_key(
 ) -> Vec<Action> {
     let key = decode_key(raw, input_maps, menu_maps, st.filtering, st.menu_active);
     st.mouse_pos = decode_mouse_pos(raw);
-    st.history.push_back(key.clone());
-    while st.history.len() > 50 {
-        st.history.pop_front();
+    if !key.is_empty() {
+        st.history.push_back(key.clone());
+        while st.history.len() > 50 {
+            st.history.pop_front();
+        }
     }
     process_key(&key, st, view, editor, now_ms)
 }
@@ -2037,9 +2059,10 @@ mod tests {
 
     //? Cpu branch (:542-570). HISTORY CONTRACT (see cpu_key docs): get()
     // pushes the key BEFORE process (:193-196), so st.history must already
-    // INCLUDE the current key when calling process_key directly — every test
-    // below pre-fills history ending with the pressed key. handle_key upholds
-    // this ordering (covered by the integration test at the bottom).
+    // INCLUDE the current key when calling process_key directly — the histed()
+    // helper below builds a faithful 50-entry window (:91 prefill + pushes).
+    // handle_key upholds this ordering (covered by the integration tests at
+    // the bottom).
 
     fn cpu_view(update_ms: i64) -> ViewState {
         ViewState {
@@ -2051,8 +2074,18 @@ mod tests {
     }
 
     fn histed(keys: &[&str], last_press_ms: u64) -> InputState {
+        // Faithful C++ 50-window (btop_input.cpp:91, :193-196): start from 50
+        // "" then push_back + pop_front each key, INCLUDING the current key.
+        // Short slices leave leading "" entries (no accel); a full 50-slice
+        // of "+" / "-" is the accelerated shape.
+        let mut history: std::collections::VecDeque<String> =
+            std::collections::VecDeque::from(vec![String::new(); 50]);
+        for k in keys {
+            history.push_back(k.to_string());
+            history.pop_front();
+        }
         InputState {
-            history: keys.iter().map(|s| s.to_string()).collect(),
+            history,
             last_press_ms,
             ..Default::default()
         }
@@ -2067,11 +2100,12 @@ mod tests {
     }
 
     #[test]
-    fn cpu_accel_up_triple_plus() {
+    fn cpu_accel_up_fifty_plus() {
         // update 2000 (<= 86399000) + inside 200ms window + history all "+"
+        // over the full 50-window (:91 prefill displaced by 50 "+" presses)
         // ⇒ +1000 (:549-552). last_press advances to now.
         let view = cpu_view(2000);
-        let mut st = histed(&["+", "+", "+"], 1000);
+        let mut st = histed(&["+"; 50], 1000);
         let mut ed = TextEdit::new(String::new(), false);
         assert_eq!(
             process_key("+", &mut st, &view, &mut ed, 1100),
@@ -2082,8 +2116,8 @@ mod tests {
 
     #[test]
     fn cpu_single_up_without_window_or_history() {
-        // Fresh press (last=0, far outside the window) ⇒ +100 even with a
-        // clean single-"+" history.
+        // Fresh press (last=0, far outside the window) ⇒ +100 even though the
+        // trailing history is uniform (49 "" prefill + one "+").
         let view = cpu_view(2000);
         let mut st = histed(&["+"], 0);
         let mut ed = TextEdit::new(String::new(), false);
@@ -2091,7 +2125,8 @@ mod tests {
             process_key("+", &mut st, &view, &mut ed, 1000),
             vec![Action::SetUpdateMs { ms: 2100 }, cpu_run()]
         );
-        // Polluted history (a stray key) ⇒ +100 even inside the window.
+        // Polluted history (a stray key among the prefill) ⇒ +100 even
+        // inside the window.
         let mut st = histed(&["x", "+"], 950);
         assert_eq!(
             process_key("+", &mut st, &view, &mut ed, 1000),
@@ -2115,15 +2150,17 @@ mod tests {
 
     #[test]
     fn cpu_accel_down_and_single_down() {
+        // Full 50-window of "-" + window hit + above the 2000 sub-gate
+        // ⇒ -1000 (:557).
         let view = cpu_view(5000);
-        let mut st = histed(&["-", "-"], 1000);
+        let mut st = histed(&["-"; 50], 1000);
         let mut ed = TextEdit::new(String::new(), false);
         assert_eq!(
             process_key("-", &mut st, &view, &mut ed, 1100),
             vec![Action::SetUpdateMs { ms: 4000 }, cpu_run()]
         );
-        // Below the 2000 accel sub-gate (:557) ⇒ single step even with
-        // window + clean history.
+        // Below the 2000 accel sub-gate (:557) ⇒ single step even inside the
+        // window (47 "" prefill + two "-" can never satisfy all_of anyway).
         let low = cpu_view(500);
         let mut st = histed(&["-", "-"], 1000);
         assert_eq!(
@@ -2327,6 +2364,7 @@ mod tests {
         let mut st = InputState::default();
         let mut ed = TextEdit::new(String::new(), false);
         let nomaps: Vec<MouseMap> = vec![];
+        let len_before = st.history.len();
         assert_eq!(
             handle_key(
                 "",
@@ -2339,6 +2377,8 @@ mod tests {
             ),
             Vec::<Action>::new()
         );
+        // C++ :193 skips empty pushes — history is untouched.
+        assert_eq!(st.history.len(), len_before);
     }
 
     #[test]
@@ -2370,19 +2410,73 @@ mod tests {
     }
 
     #[test]
+    fn default_history_prefills_50_empty() {
+        // Faithful mirror of C++ `deque<string> history(50, "")` (:91).
+        let st = InputState::default();
+        assert_eq!(st.history.len(), 50);
+        assert!(st.history.iter().all(|s| s.is_empty()));
+    }
+
+    #[test]
     fn handle_key_accel_integration_orders_history_first() {
-        // Three rapid "+" through handle_key with controlled now_ms: the
-        // third sees history ["+","+","+"] (current INCLUDED, :193-196
-        // ordering) + window hit ⇒ SetUpdateMs(+1000). Proves the glue
-        // preserves the order cpu_key depends on.
+        // With the :91 prefill, the first 49 rapid "+" through handle_key
+        // each see a history still containing "" ⇒ single-step (+100); the
+        // 50th sees 50 "+" (current INCLUDED — pushed before process per
+        // :193-196, displacing the last "") + window hit ⇒ SetUpdateMs(+1000).
+        // Proves the glue preserves the order cpu_key depends on.
+        // (view.update_ms never changes — actions are emitted, not applied —
+        // so every press expects ms 2000+add.)
         let view = cpu_view(2000);
         let mut st = InputState::default();
         let mut ed = TextEdit::new(String::new(), false);
         let nomaps: Vec<MouseMap> = vec![];
-        handle_key("+", &nomaps, &nomaps, &mut st, &view, &mut ed, 1000);
-        handle_key("+", &nomaps, &nomaps, &mut st, &view, &mut ed, 1100);
-        let third = handle_key("+", &nomaps, &nomaps, &mut st, &view, &mut ed, 1200);
-        assert_eq!(third, vec![Action::SetUpdateMs { ms: 3000 }, cpu_run()]);
-        assert_eq!(st.last_press_ms, 1200);
+        for i in 0..49 {
+            let out = handle_key(
+                "+",
+                &nomaps,
+                &nomaps,
+                &mut st,
+                &view,
+                &mut ed,
+                1000 + i * 100,
+            );
+            assert_eq!(out, vec![Action::SetUpdateMs { ms: 2100 }, cpu_run()]);
+        }
+        assert_eq!(st.history.len(), 50);
+        // One "" prefill entry remains; the 50th push displaces it.
+        assert_eq!(st.history.iter().filter(|s| *s == "+").count(), 49);
+        let accel = handle_key("+", &nomaps, &nomaps, &mut st, &view, &mut ed, 5900);
+        assert_eq!(accel, vec![Action::SetUpdateMs { ms: 3000 }, cpu_run()]);
+        assert_eq!(st.last_press_ms, 5900);
+    }
+
+    #[test]
+    fn handle_key_empty_decode_preserves_accel_streak() {
+        // 49 "+" + one undecodable raw ("\x1b[9~" → "", keys.rs) + one "+":
+        // the "" decode is skipped (:193), so the final "+" completes a full
+        // 50-"+" window ⇒ accel (+1000).
+        let view = cpu_view(2000);
+        let mut st = InputState::default();
+        let mut ed = TextEdit::new(String::new(), false);
+        let nomaps: Vec<MouseMap> = vec![];
+        for i in 0..49 {
+            handle_key(
+                "+",
+                &nomaps,
+                &nomaps,
+                &mut st,
+                &view,
+                &mut ed,
+                1000 + i * 100,
+            );
+        }
+        let len_before = st.history.len();
+        assert_eq!(
+            handle_key("\x1b[9~", &nomaps, &nomaps, &mut st, &view, &mut ed, 5900),
+            Vec::<Action>::new()
+        );
+        assert_eq!(st.history.len(), len_before);
+        let accel = handle_key("+", &nomaps, &nomaps, &mut st, &view, &mut ed, 6000);
+        assert_eq!(accel, vec![Action::SetUpdateMs { ms: 3000 }, cpu_run()]);
     }
 }
