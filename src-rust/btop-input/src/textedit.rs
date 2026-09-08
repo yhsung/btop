@@ -64,7 +64,11 @@ impl TextEdit {
                 self.upos -= 1;
                 let first = uresize(&self.text, self.upos, false);
                 self.pos = first.len();
-                let tail = luresize(&self.text[self.pos..], ulen(&self.text, false) - self.upos - 1, false);
+                let tail = luresize(
+                    &self.text[self.pos..],
+                    ulen(&self.text, false) - self.upos - 1,
+                    false,
+                );
                 self.text = first + &tail;
             }
         } else if key == "delete" && self.pos < self.text.len() {
@@ -116,7 +120,11 @@ impl TextEdit {
             // upos < half, so the arm holds exactly when upos == half.
             let first = if self.upos + half > text_len {
                 // Taken only when text_len - upos < half <= limit: no underflow.
-                luresize(&self.text[..self.pos], limit - (text_len - self.upos), false)
+                luresize(
+                    &self.text[..self.pos],
+                    limit - (text_len - self.upos),
+                    false,
+                )
             } else if self.upos.checked_sub(half).is_some_and(|d| d < 1) {
                 self.text[..self.pos].to_string()
             } else {
@@ -138,7 +146,11 @@ impl TextEdit {
         // below cannot underflow, and the final else arm has
         // 1 <= c_upos <= ulen(out) - 1.
         if c_upos == 0 {
-            format!("{UL}{}{UUL}{}", uresize(&out, 1, false), luresize(&out, ulen(&out, false) - 1, false))
+            format!(
+                "{UL}{}{UUL}{}",
+                uresize(&out, 1, false),
+                luresize(&out, ulen(&out, false) - 1, false)
+            )
         } else if c_upos == ulen(&out, false) {
             format!("{out}{UL} {UUL}")
         } else {

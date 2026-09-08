@@ -39,20 +39,34 @@ pub enum ScrollKey {
 pub enum Action {
     Quit,
     ReloadConfig,
-    ShowMenu { menu: MenuKind },
-    ToggleBox { index: u8 },
-    CyclePreset { dir: i8 },
+    ShowMenu {
+        menu: MenuKind,
+    },
+    ToggleBox {
+        index: u8,
+    },
+    CyclePreset {
+        dir: i8,
+    },
     Run {
         target: RunTarget,
         no_update: bool,
         redraw: bool,
     },
     RecalcLayout,
-    SetUpdateMs { ms: i64 },
-    CommitFilter { via_down: bool },
+    SetUpdateMs {
+        ms: i64,
+    },
+    CommitFilter {
+        via_down: bool,
+    },
     CancelFilter,
-    SetProcFilter { text: String },
-    OpenFilterEditor { current: String },
+    SetProcFilter {
+        text: String,
+    },
+    OpenFilterEditor {
+        current: String,
+    },
     SortPrev,
     SortNext,
     ToggleTree,
@@ -65,17 +79,31 @@ pub enum Action {
     TogglePerCore,
     ToggleMemBytes,
     ClearFilter,
-    ProcSelectRow { row: i64 },
+    ProcSelectRow {
+        row: i64,
+    },
     ProcDetailOpen,
     ProcDetailClose,
-    ExpandPid { pid: u64 },
-    CollapsePid { pid: u64 },
-    ToggleChildren { pid: u64 },
-    ProcScroll { key: ScrollKey },
-    SetDraggingScroll { on: bool },
+    ExpandPid {
+        pid: u64,
+    },
+    CollapsePid {
+        pid: u64,
+    },
+    ToggleChildren {
+        pid: u64,
+    },
+    ProcScroll {
+        key: ScrollKey,
+    },
+    SetDraggingScroll {
+        on: bool,
+    },
     ToggleIoMode,
     ToggleDisks,
-    CycleIface { dir: i8 },
+    CycleIface {
+        dir: i8,
+    },
     ToggleNetSync,
     ToggleNetAuto,
     ZeroNetOffsets,
@@ -101,7 +129,11 @@ pub struct InputState {
 pub struct ViewState;
 
 fn help_key(st: &InputState) -> &str {
-    if st.vim_keys { "H" } else { "h" }
+    if st.vim_keys {
+        "H"
+    } else {
+        "h"
+    }
 }
 
 /// Pure dispatcher (global branch only; Tasks 4-5 append sections).
@@ -116,11 +148,17 @@ pub fn process_key(key: &str, st: &mut InputState, _view: &ViewState, _now_ms: u
         if key == "q" {
             out.push(Action::Quit);
         } else if key == "escape" || key == "m" {
-            out.push(Action::ShowMenu { menu: MenuKind::Main });
+            out.push(Action::ShowMenu {
+                menu: MenuKind::Main,
+            });
         } else if key == "f1" || key == "?" || key == help_key(st) {
-            out.push(Action::ShowMenu { menu: MenuKind::Help });
+            out.push(Action::ShowMenu {
+                menu: MenuKind::Help,
+            });
         } else if key == "f2" || key == "o" {
-            out.push(Action::ShowMenu { menu: MenuKind::Options });
+            out.push(Action::ShowMenu {
+                menu: MenuKind::Options,
+            });
         } else if key.len() == 1 && key.as_bytes()[0].is_ascii_digit() {
             out.push(Action::ToggleBox {
                 index: key.as_bytes()[0] - b'0',
@@ -174,18 +212,40 @@ mod tests {
         assert_eq!(proced("q"), vec![Action::Quit]);
         assert_eq!(
             proced("escape"),
-            vec![Action::ShowMenu { menu: MenuKind::Main }]
+            vec![Action::ShowMenu {
+                menu: MenuKind::Main
+            }]
         );
-        assert_eq!(proced("m"), vec![Action::ShowMenu { menu: MenuKind::Main }]);
-        assert_eq!(proced("f1"), vec![Action::ShowMenu { menu: MenuKind::Help }]);
-        assert_eq!(proced("?"), vec![Action::ShowMenu { menu: MenuKind::Help }]);
+        assert_eq!(
+            proced("m"),
+            vec![Action::ShowMenu {
+                menu: MenuKind::Main
+            }]
+        );
+        assert_eq!(
+            proced("f1"),
+            vec![Action::ShowMenu {
+                menu: MenuKind::Help
+            }]
+        );
+        assert_eq!(
+            proced("?"),
+            vec![Action::ShowMenu {
+                menu: MenuKind::Help
+            }]
+        );
         assert_eq!(
             proced("f2"),
             vec![Action::ShowMenu {
                 menu: MenuKind::Options
             }]
         );
-        assert_eq!(proced("o"), vec![Action::ShowMenu { menu: MenuKind::Options }]);
+        assert_eq!(
+            proced("o"),
+            vec![Action::ShowMenu {
+                menu: MenuKind::Options
+            }]
+        );
         assert_eq!(proced("3"), vec![Action::ToggleBox { index: 3 }]);
         assert_eq!(proced("p"), vec![Action::CyclePreset { dir: 1 }]);
         assert_eq!(proced("P"), vec![Action::CyclePreset { dir: -1 }]);
@@ -201,7 +261,9 @@ mod tests {
         };
         assert_eq!(
             process_key("H", &mut st, &ViewState, 0),
-            vec![Action::ShowMenu { menu: MenuKind::Help }]
+            vec![Action::ShowMenu {
+                menu: MenuKind::Help
+            }]
         );
         assert_eq!(
             process_key("h", &mut st, &ViewState, 0),
