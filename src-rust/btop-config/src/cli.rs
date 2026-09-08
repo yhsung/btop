@@ -69,7 +69,9 @@ fn next_value(it: &mut std::slice::Iter<'_, String>) -> Result<String, i32> {
 /// Mirror C++ `std::stoi`: skip leading ASCII spaces, optional single
 /// `+`/`-` sign, then a non-empty run of ASCII digits (stop at first
 /// non-digit). Accumulate in i64 and range-check to i32.
-fn stoi_prefix(s: &str) -> Result<i32, ()> {
+///
+/// Shared with `btop-input` for SGR mouse coordinates (btop_input.cpp).
+pub fn stoi_prefix(s: &str) -> Result<i32, ()> {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() && b[i].is_ascii_whitespace() {

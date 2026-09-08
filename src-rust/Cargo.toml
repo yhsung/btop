@@ -1,3 +1,3 @@
 [workspace]
-members = ["btop-tools", "btop-config", "btop-collect", "btop-draw"]
+members = ["btop-tools", "btop-config", "btop-collect", "btop-draw", "btop-input"]
 resolver = "2"

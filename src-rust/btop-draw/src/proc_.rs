@@ -67,16 +67,7 @@ use crate::theme_grad::{color, gradient};
 use btop_tools::strtools::{cjust, ljust, luresize, rjust, rtrim, uresize, wide_ulen};
 use std::collections::HashMap;
 
-/// One mouse mapping (`Input::mouse_mappings` entry, btop_input.cpp).
-/// `x/y` is the top-left cell, `w/h` the size, `action` the key.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MouseMap {
-    pub x: i64,
-    pub y: i64,
-    pub w: i64,
-    pub h: i64,
-    pub action: String,
-}
+pub use btop_tools::mouse::MouseMap;
 
 /// One process row: the `Proc::proc_info` fields `draw` reads
 /// (src/btop_shared.hpp:382-404). Ordering/sorting, tree prefixes and
