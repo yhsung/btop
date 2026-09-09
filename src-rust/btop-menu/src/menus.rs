@@ -834,6 +834,43 @@ impl MenuSystem {
             }
         }
     }
+
+    /// Rebuild [`MenuSystem::overlay`] + [`MenuSystem::mouse_maps`] for the
+    /// currently active menu (Task 6; see [`crate::overlay`]).
+    ///
+    /// Mirrors the C++ draw-on-`Changed` arms: call after `show`/`process`
+    /// drove the LOGIC. `term_w`/`term_h` are the terminal size (golden:
+    /// 100x30); `theme` is the complete theme map (golden: Default).
+    /// `SizeError`/`Signal*` menus render nothing (out of golden scope).
+    pub fn render_overlay(
+        &mut self,
+        store: &OptionsStore,
+        lists: &HashMap<String, Vec<String>>,
+        theme: &HashMap<String, String>,
+        term_w: i64,
+        term_h: i64,
+    ) {
+        let Some(cur) = self.current else {
+            self.overlay.clear();
+            self.mouse_maps.clear();
+            return;
+        };
+        let (out, maps) = crate::overlay::render_into(
+            cur,
+            self.main_selected,
+            self.options.tab,
+            self.options.page,
+            self.options.selected,
+            self.help_page,
+            store,
+            lists,
+            theme,
+            term_w,
+            term_h,
+        );
+        self.overlay = out;
+        self.mouse_maps = maps;
+    }
 }
 
 /// `stoi` with the C++ try/catch folded in (`reniceMenu` `:1827-1830`,
