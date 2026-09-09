@@ -1250,6 +1250,33 @@ mod tests {
     }
 
     #[test]
+    fn assemble_proc_does_not_touch_scroll_pos() {
+        // P3 wiring contract: `assemble_proc` MUST NOT mutate
+        // `proc_scroll_pos` — the scroll bar position is owned by the
+        // draw layer (computed inside `Proc::draw`, btop_draw.cpp:2192
+        // from `proc_start * select_max / (numpids - select_max)`) and
+        // Task 4's `apply_scroll` sink helper, NOT by the tick. Pin the
+        // invariant here so a future refactor of the tick that lazily
+        // "pre-computes" scroll pos cannot silently break the draw
+        // side or the sink selection() math (which the trailing-Run
+        // suppression in `execute_all` depends on).
+        let mut s = AppState::default();
+        s.tick_factor = 1.0;
+        s.core_count = 8;
+        s.proc_sorting = "pid".to_string();
+        let raws = vec![
+            proc_raw(10, "aaa", 1000, 100),
+            proc_raw(20, "bbb", 1000, 200),
+        ];
+        s.proc_scroll_pos = 7;
+        let _ = assemble_proc(&mut s, raws, 8000, 50);
+        assert_eq!(
+            s.proc_scroll_pos, 7,
+            "tick must leave proc_scroll_pos untouched"
+        );
+    }
+
+    #[test]
     fn apply_config_maps_keys_onto_flags() {
         let mut cfg = Config::new();
         cfg.strings
