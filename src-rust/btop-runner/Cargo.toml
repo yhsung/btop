@@ -1,0 +1,12 @@
+[package]
+name = "btop-runner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+btop-collect = { path = "../btop-collect" }
+btop-draw = { path = "../btop-draw" }
+btop-input = { path = "../btop-input" }
+btop-menu = { path = "../btop-menu" }
+btop-config = { path = "../btop-config" }
+btop-tools = { path = "../btop-tools" }

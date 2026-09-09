@@ -40,5 +40,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "btop-runner"
+version = "0.1.0"
+dependencies = [
+ "btop-collect",
+ "btop-config",
+ "btop-draw",
+ "btop-input",
+ "btop-menu",
+ "btop-tools",
+]
+
+[[package]]
 name = "btop-tools"
 version = "0.1.0"
