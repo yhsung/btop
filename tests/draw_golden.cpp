@@ -437,5 +437,10 @@ int main() {
 		emit("msgbox_yesno", yesno());
 	}
 
+	// Menu::process → Runner::run("all") leaves Config::locked == true even
+	// headless. Unlock so any scenario appended after this block gets live
+	// Config::set values instead of silent *Tmp staging.
+	Config::unlock();
+
 	return 0;
 }

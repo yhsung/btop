@@ -66,3 +66,10 @@ It runs the harness twice, requires an empty normalized diff
 `.ans` files are single-line blobs: terminal diffs wrap them into noise.
 Diff with wrapping disabled or visible escapes, e.g. `diff --width=...`,
 `cat -v`, or compare per-escape with `sed 's/\x1b/\nESC/g'`.
+
+## Trailing state
+
+The menu block ends with `Config::unlock()`: `Menu::process` calls
+`Runner::run("all")`, which leaves `Config::locked == true` even headless, and a
+locked Config diverts later `setup()` sets into `*Tmp` staging maps. The unlock
+restores the invariant so scenarios appended after menus behave.
