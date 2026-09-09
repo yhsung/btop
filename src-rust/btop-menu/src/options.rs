@@ -9,6 +9,7 @@
 //! SHOWN_BOXES DECISION (P2 Task 4 Step 0b): C++ validates `shown_boxes`
 //! against live terminal/box state (`stringValid`, `:610-619` — needs `Term`
 //! + `set_boxes`), so the Rust `Config::string_valid` always passes for it.
+//!
 //! The commit path below special-cases the key ([`commit_edit`] accepts
 //! `shown_boxes` WITHOUT calling `string_valid`): the staged value is
 //! validated at layout time in P3 and is never persisted on bare `true`

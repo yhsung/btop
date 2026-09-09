@@ -398,9 +398,7 @@ impl MenuSystem {
             return (MenuOutcome::Changed, vec![]);
         }
         if matches!(key, "down" | "j") {
-            self.signal_selected = if s == 31 {
-                1
-            } else if s < 1 || s == 16 {
+            self.signal_selected = if s == 31 || s < 1 || s == 16 {
                 1
             } else if s > 26 {
                 s - 25

@@ -294,6 +294,7 @@ impl Config {
     ///   unconditionally),
     /// - `presets` via `presetsValid` (`:476-512`; errors at `:481-504`),
     /// - `cpu_core_map` (`:629-645`) and `io_graph_speeds` (`:646-662`).
+    ///
     /// Unknown names pass (`:664-665` fall through to `return true`).
     ///
     /// Deliberate deviations: `shown_boxes` always passes — C++ checks
