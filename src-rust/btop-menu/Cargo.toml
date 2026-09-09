@@ -7,3 +7,4 @@ edition = "2021"
 btop-input = { path = "../btop-input" }
 btop-config = { path = "../btop-config" }
 btop-draw = { path = "../btop-draw" }
+btop-tools = { path = "../btop-tools" }

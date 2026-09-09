@@ -36,6 +36,7 @@ dependencies = [
  "btop-config",
  "btop-draw",
  "btop-input",
+ "btop-tools",
 ]
 
 [[package]]

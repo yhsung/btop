@@ -15,6 +15,11 @@ const UL: &str = "\x1b[4m";
 const UUL: &str = "\x1b[24m";
 
 /// Editable line buffer (src/btop_draw.cpp:179-183).
+///
+/// `Default` is the empty buffer with the cursor at zero, field-identical to
+/// `TextEdit::new(String::new(), false)` (empty text ⇒ `pos = 0`, `upos = 0`,
+/// `numeric = false`; pinned by `default_matches_empty_ctor` below).
+#[derive(Debug, Clone, Default)]
 pub struct TextEdit {
     pub text: String,
     pub pos: usize,
@@ -178,6 +183,16 @@ mod tests {
     fn ctor_places_cursor_at_end() {
         let e = TextEdit::new("abc".into(), false);
         assert_eq!((e.text.as_str(), e.pos, e.upos), ("abc", 3, 3));
+    }
+
+    #[test]
+    fn default_matches_empty_ctor() {
+        // Default = empty + zeros ≡ new("", false).
+        let d = TextEdit::default();
+        let n = TextEdit::new(String::new(), false);
+        assert_eq!(d.text, n.text);
+        assert_eq!((d.pos, d.upos, d.numeric), (n.pos, n.upos, n.numeric));
+        assert!(!d.numeric);
     }
 
     #[test]

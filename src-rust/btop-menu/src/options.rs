@@ -70,10 +70,12 @@ use btop_input::textedit::TextEdit;
 /// (`:1299-1314`: `selected_cat` → [`MenuState::tab`], `selected`, `page`,
 /// `editing`, `editor`, `warnings`).
 ///
-/// `Debug`/`Default` are manual: [`TextEdit`] provides neither (and
-/// `btop-input/src/textedit.rs` is out of scope for this task), so deriving
-/// is impossible. Defaults match a freshly opened menu: tab/selected/page 0,
-/// not editing, empty editor, no warnings, flags clear.
+/// Derives (not manual impls): [`TextEdit`] now provides
+/// `Debug + Clone + Default`, so the full editor state (`text`, `pos`,
+/// `upos`, `numeric`) is visible in debug output. Defaults match a freshly
+/// opened menu: tab/selected/page 0, not editing, empty editor, no warnings,
+/// flags clear.
+#[derive(Debug, Clone, Default)]
 pub struct MenuState {
     pub tab: usize,
     pub selected: usize,
@@ -83,36 +85,6 @@ pub struct MenuState {
     pub warnings: Option<String>,
     pub theme_refresh: bool,
     pub screen_redraw: bool,
-}
-
-impl std::fmt::Debug for MenuState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MenuState")
-            .field("tab", &self.tab)
-            .field("selected", &self.selected)
-            .field("page", &self.page)
-            .field("editing", &self.editing)
-            .field("editor_text", &self.editor.text)
-            .field("warnings", &self.warnings)
-            .field("theme_refresh", &self.theme_refresh)
-            .field("screen_redraw", &self.screen_redraw)
-            .finish()
-    }
-}
-
-impl Default for MenuState {
-    fn default() -> Self {
-        Self {
-            tab: 0,
-            selected: 0,
-            page: 0,
-            editing: false,
-            editor: TextEdit::new(String::new(), false),
-            warnings: None,
-            theme_refresh: false,
-            screen_redraw: false,
-        }
-    }
 }
 
 /// Owned option values, initialized FROM `btop-config` `Config` in P3 (tests
@@ -143,9 +115,13 @@ pub enum OptKind {
     Editable,
 }
 
-/// Options with a static value list (`optionsList`, `:1315-1340`), Apple
-/// Silicon + `GPU_SUPPORT` scope (matching `tables.rs`): `freq_mode` is
-/// `__linux__`-only and excluded.
+/// Options with a static value list (`optionsList`,
+/// `src/btop_menu.cpp:1315-1340`), Apple Silicon + `GPU_SUPPORT` scope
+/// (matching `tables.rs`): `freq_mode` (`:1319-1321`) is `__linux__`-only
+/// and excluded. Every entry MUST name an option in [`CATEGORIES`]
+/// (pinned by the `browsable_options_all_categorized` test below —
+/// catches typos here at unit-test time rather than as a silent
+/// non-browsable row in the menu).
 pub const BROWSABLE_OPTIONS: &[&str] = &[
     "color_theme",
     "log_level",
@@ -665,6 +641,24 @@ mod tests {
     }
 
     //? classify_option (:1605-1621).
+
+    #[test]
+    fn browsable_options_all_categorized() {
+        // Guard: every BROWSABLE_OPTIONS entry (C++ optionsList, :1315-1340)
+        // must appear as an option name in CATEGORIES, or the row silently
+        // degrades to Editable/Str. Catches typos in the list above.
+        let known: std::collections::HashSet<&str> = CATEGORIES
+            .iter()
+            .flat_map(|tab| tab.iter())
+            .map(|entry| entry[0])
+            .collect();
+        for name in BROWSABLE_OPTIONS {
+            assert!(
+                known.contains(name),
+                "BROWSABLE_OPTIONS entry '{name}' not found in CATEGORIES"
+            );
+        }
+    }
 
     #[test]
     fn classify_each_kind() {

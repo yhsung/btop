@@ -48,8 +48,14 @@ pub enum MenuKind {
     Help,
     Options,
     SizeError,
-    SignalSend { sig: i32 },
+    SignalSend {
+        sig: i32,
+    },
     SignalChoose,
+    /// Error box after a failed kill (`signalReturn`, `btop_menu.cpp:1187`).
+    /// Never emitted by `process_key` (only `SignalSend`/`SignalChoose` open
+    /// from proc keys); the P3 sink shows it when a [`Action::Kill`] fails.
+    SignalReturn,
     Renice,
 }
 
@@ -97,8 +103,9 @@ const SIG_KILL: i32 = 9;
 /// (everywhere). OpenFilterEditor was deleted: the f/ arm mutates the editor
 /// directly and emits no intent (nothing left for the sink to intend).
 /// The menu tail (ApplyTheme..SetMouseEnabled) is constructed by the
-/// btop-menu options commit/flip/cycle paths (P2 Task 4), never by
-/// process_key — see each variant's contract.
+/// btop-menu options commit/flip/cycle paths (P2 Task 4), and
+/// (Kill/SetPriority) by the btop-menu signal/renice paths (P2 Task 5) —
+/// never by process_key — see each variant's contract.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Quit,
@@ -286,6 +293,23 @@ pub enum Action {
     /// options flip path.
     SetMouseEnabled {
         enabled: bool,
+    },
+    /// Sink: `kill(pid, sig)` (`signalChoose` enter, `btop_menu.cpp:1038`;
+    /// `signalSend` confirm, `:1162`). On failure the sink records `errno`
+    /// and shows [`MenuKind::SignalReturn`]. Constructed by the btop-menu
+    /// signal paths (P2 Task 5), never by `process_key`.
+    Kill {
+        pid: u64,
+        sig: i32,
+    },
+    /// Sink: `Proc::set_priority(pid, nice)` (`reniceMenu` enter,
+    /// `btop_menu.cpp:1832`). `nice` is pre-clamped to -20..=19 by the menu
+    /// (up/down wrap, left/right ±5 wrap, typed text parsed via `stoi`
+    /// with 0 on failure, `:1838-1871`). Constructed by the btop-menu
+    /// renice path (P2 Task 5), never by `process_key`.
+    SetPriority {
+        pid: u64,
+        nice: i64,
     },
 }
 pub trait ActionSink {
