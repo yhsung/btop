@@ -161,16 +161,20 @@ impl ProcFlags {
 
 /// All inputs `Proc::draw` reads, as explicit params.
 /// Mirrors btop_draw.cpp:1707-2246.
+///
+/// Borrowed (CpuDrawInput/MemDrawInput precedent): the caller owns the
+/// per-frame vecs/strings; this struct only borrows them so `draw_proc`
+/// performs no per-frame clone on the hottest path.
 #[derive(Debug, Clone)]
-pub struct ProcDrawInput {
+pub struct ProcDrawInput<'a> {
     /// `plist` in draw order (collect-side sorted; harness: pid order).
-    pub procs: Vec<ProcInfo>,
+    pub procs: &'a [ProcInfo],
     /// `Proc::numpids` (:1733; harness 3).
     pub numpids: i64,
     /// `Mem::get_totalMem()` (:1732; harness 0 — see module docs).
     pub total_mem: u64,
     /// Config `proc_sorting` title string (:1916; harness "pid").
-    pub sorting: String,
+    pub sorting: &'a str,
     pub start: i64,    // :1726 Config proc_start (resolved view offset)
     pub selected: i64, // :1727 Config proc_selected (0 = none)
     /// `proc_followed` (:1722; list-middle anchor when following).
@@ -192,16 +196,16 @@ pub struct ProcDrawInput {
     pub prev_banner: bool,
     /// Stored `proc_filter` text (title row when `!filtering`; `None` =
     /// empty). The active-edit text while `filtering` (TextEdit seam).
-    pub filter: Option<String>,
+    pub filter: Option<&'a str>,
     /// Detail pane (`show_detailed && last_pid == detailed_pid`);
     /// `None` = list view (harness).
-    pub detailed: Option<ProcDetail>,
-    pub graph_symbol_cfg: String,      // :1714 Config graph_symbol
-    pub graph_symbol_proc_cfg: String, // :1714 Config graph_symbol_proc
+    pub detailed: Option<&'a ProcDetail>,
+    pub graph_symbol_cfg: &'a str,      // :1714 Config graph_symbol
+    pub graph_symbol_proc_cfg: &'a str, // :1714 Config graph_symbol_proc
     pub flags: ProcFlags,
-    pub force_redraw: bool,   // :1734 force_redraw → redraw
-    pub data_same: bool,      // per-graph data_same
-    pub prev: Option<String>, // cached out for data_same
+    pub force_redraw: bool,    // :1734 force_redraw → redraw
+    pub data_same: bool,       // per-graph data_same
+    pub prev: Option<&'a str>, // cached out for data_same
 }
 
 /// Plain-substring filter match (`Proc::matches_filter` non-`!` arm,
@@ -802,40 +806,21 @@ fn render_detail_values(
     out
 }
 
-/// Filter + sort + bottom buttons + header (redraw block `:1993-2090`).
+/// Filter title row (`:1995-1999`): `f[ilter] [text] [del]/[↵]`.
 #[allow(clippy::too_many_arguments)]
-fn render_titles(
+fn render_filter_row(
+    input: &ProcDrawInput,
     y: i64,
     x: i64,
     width: i64,
-    height: i64,
-    selected: i64,
-    sort_pos: i64,
-    fw: &FieldWidths,
-    sorting: &str,
-    per_core: bool,
-    reversed: bool,
-    proc_tree: bool,
-    vim_keys: bool,
-    pause_proc_list: bool,
-    follow_process: bool,
-    filtering: bool,
-    filter: Option<&str>,
-    show_graphs: bool,
-    mem_bytes: bool,
-    followed_pid: i64,
-    detailed_pid: i64,
-    should_return: bool,
     pal: &Palette,
     title_left: &str,
     title_right: &str,
-    title_left_down: &str,
-    title_right_down: &str,
-    is_last: bool,
     maps: &mut Vec<MouseMap>,
 ) -> String {
     let mut out = String::new();
-    let filter_text = filter.unwrap_or("");
+    let filtering = input.flags.filtering;
+    let filter_text = input.filter.unwrap_or("");
     let filter_shown = uresize(filter_text, (6).max(width - 66) as usize, false);
     // :1995-1999 filter title.
     out += &mv_to(y, x + 9);
@@ -886,12 +871,30 @@ fn render_titles(
             });
         }
     }
+    out
+}
+
+/// Pause / per-core / reverse / tree / sorting arrows (`:2009-2039`).
+#[allow(clippy::too_many_arguments)]
+fn render_sort_buttons(
+    input: &ProcDrawInput,
+    y: i64,
+    width: i64,
+    sort_pos: i64,
+    pal: &Palette,
+    title_left: &str,
+    title_right: &str,
+    maps: &mut Vec<MouseMap>,
+) -> String {
+    let mut out = String::new();
+    let f = &input.flags;
+    let sorting = input.sorting;
     // :2009-2039 pause / per-core / reverse / tree / sorting.
     let sort_len = sorting.len() as i64;
     if width > 60 + sort_len {
         out += &mv_to(y, sort_pos - 32);
         out += title_left;
-        if pause_proc_list {
+        if f.pause_proc_list {
             out += FX_B;
         }
         out += &pal.title;
@@ -913,7 +916,7 @@ fn render_titles(
     if width > 55 + sort_len {
         out += &mv_to(y, sort_pos - 25);
         out += title_left;
-        if per_core {
+        if f.per_core {
             out += FX_B;
         }
         out += &pal.title;
@@ -935,7 +938,7 @@ fn render_titles(
     if width > 45 + sort_len {
         out += &mv_to(y, sort_pos - 15);
         out += title_left;
-        if reversed {
+        if f.reversed {
             out += FX_B;
         }
         out += &pal.hi_fg;
@@ -955,7 +958,7 @@ fn render_titles(
     if width > 35 + sort_len {
         out += &mv_to(y, sort_pos - 6);
         out += title_left;
-        if proc_tree {
+        if f.proc_tree {
             out += FX_B;
         }
         out += &pal.title;
@@ -999,13 +1002,70 @@ fn render_titles(
         h: 1,
         action: "right".to_string(),
     });
+    out
+}
+
+/// Column field labels (`:2076-2089`): Pid/Program/Command or Tree plus
+/// Threads/User/Mem/Cpu headers.
+fn render_header(input: &ProcDrawInput, y: i64, x: i64, fw: &FieldWidths, pal: &Palette) -> String {
+    let mut out = String::new();
+    let f = &input.flags;
+    // :2076-2089 field labels.
+    out += &mv_to(y + 1, x + 1);
+    out += &pal.title;
+    out += FX_B;
+    if !f.proc_tree {
+        out += &rjust("Pid:", 8, true);
+        out += " ";
+        out += &ljust("Program:", fw.prog.max(0) as usize, true);
+        out += " ";
+        if fw.cmd > 0 {
+            out += &ljust("Command:", fw.cmd as usize, true);
+        }
+        out += " ";
+    } else {
+        out += &ljust("Tree:", fw.tree.max(0) as usize, true);
+        out += " ";
+    }
+    if fw.thread > 0 {
+        out += &mv_l(4);
+        out += "Threads: ";
+    }
+    out += &ljust("User:", fw.user.max(0) as usize, true);
+    out += " ";
+    out += &rjust(if f.mem_bytes { "MemB" } else { "Mem%" }, 5, true);
+    out += " ";
+    out += &rjust("Cpu%", if f.show_graphs { 10 } else { 5 }, true);
+    out += FX_UB;
+    out
+}
+
+/// Bottom select / info / terminate / kill / signals / nice / follow
+/// buttons (`:2041-2074`).
+#[allow(clippy::too_many_arguments)]
+fn render_action_buttons(
+    input: &ProcDrawInput,
+    y: i64,
+    x: i64,
+    width: i64,
+    height: i64,
+    selected: i64,
+    is_last: bool,
+    pal: &Palette,
+    title_left_down: &str,
+    title_right_down: &str,
+    maps: &mut Vec<MouseMap>,
+) -> String {
+    let mut out = String::new();
+    let f = &input.flags;
     // :2041-2074 select / info / signal / follow buttons.
     let down_button = (if is_last {
         pal.inactive.clone()
     } else {
         pal.hi_fg.clone()
     }) + DOWN;
-    let up_lit = selected != 0 || (follow_process && followed_pid == detailed_pid && should_return);
+    let up_lit = selected != 0
+        || (f.follow_process && input.followed_pid == input.detailed_pid && input.should_return);
     let up_button = (if up_lit {
         pal.hi_fg.clone()
     } else {
@@ -1074,7 +1134,7 @@ fn render_titles(
         out += title_left_down;
         out += FX_B;
         out += &hi_color;
-        out += if vim_keys { "K" } else { "k" };
+        out += if f.vim_keys { "K" } else { "k" };
         out += &t_color;
         out += "ill";
         out += FX_UB;
@@ -1085,7 +1145,7 @@ fn render_titles(
                 y: y + height - 1,
                 w: 4,
                 h: 1,
-                action: if vim_keys {
+                action: if f.vim_keys {
                     "K".to_string()
                 } else {
                     "k".to_string()
@@ -1132,7 +1192,7 @@ fn render_titles(
     mouse_x += 6;
     if width > 72 {
         out += title_left_down;
-        if follow_process {
+        if f.follow_process {
             out += FX_B;
         }
         out += &hi_color;
@@ -1151,33 +1211,57 @@ fn render_titles(
             });
         }
     }
-    // :2076-2089 field labels.
-    out += &mv_to(y + 1, x + 1);
-    out += &pal.title;
-    out += FX_B;
-    if !proc_tree {
-        out += &rjust("Pid:", 8, true);
-        out += " ";
-        out += &ljust("Program:", fw.prog.max(0) as usize, true);
-        out += " ";
-        if fw.cmd > 0 {
-            out += &ljust("Command:", fw.cmd as usize, true);
-        }
-        out += " ";
-    } else {
-        out += &ljust("Tree:", fw.tree.max(0) as usize, true);
-        out += " ";
-    }
-    if fw.thread > 0 {
-        out += &mv_l(4);
-        out += "Threads: ";
-    }
-    out += &ljust("User:", fw.user.max(0) as usize, true);
-    out += " ";
-    out += &rjust(if mem_bytes { "MemB" } else { "Mem%" }, 5, true);
-    out += " ";
-    out += &rjust("Cpu%", if show_graphs { 10 } else { 5 }, true);
-    out += FX_UB;
+    out
+}
+
+/// Filter + sort + bottom buttons + header (redraw block `:1993-2090`).
+/// Orchestration only: delegates to the four section helpers
+/// (`render_filter_row` / `render_sort_buttons` / `render_action_buttons` /
+/// `render_header`), each owning one contiguous C++ range.
+#[allow(clippy::too_many_arguments)]
+fn render_titles(
+    input: &ProcDrawInput,
+    y: i64,
+    x: i64,
+    width: i64,
+    height: i64,
+    selected: i64,
+    sort_pos: i64,
+    is_last: bool,
+    fw: &FieldWidths,
+    pal: &Palette,
+    title_left: &str,
+    title_right: &str,
+    title_left_down: &str,
+    title_right_down: &str,
+    maps: &mut Vec<MouseMap>,
+) -> String {
+    let mut out = String::new();
+    out += &render_filter_row(input, y, x, width, pal, title_left, title_right, maps);
+    out += &render_sort_buttons(
+        input,
+        y,
+        width,
+        sort_pos,
+        pal,
+        title_left,
+        title_right,
+        maps,
+    );
+    out += &render_action_buttons(
+        input,
+        y,
+        x,
+        width,
+        height,
+        selected,
+        is_last,
+        pal,
+        title_left_down,
+        title_right_down,
+        maps,
+    );
+    out += &render_header(input, y, x, fw, pal);
     out
 }
 
@@ -1418,7 +1502,7 @@ pub fn draw_proc(
 ) -> String {
     // data_same → cached out.
     if input.data_same {
-        return input.prev.clone().unwrap_or_default();
+        return input.prev.unwrap_or("").to_string();
     }
     let f = &input.flags;
     let lowcolor = f.common.lowcolor;
@@ -1429,9 +1513,9 @@ pub fn draw_proc(
     let base_symbol: &str = if f.common.tty_mode || input.graph_symbol_proc_cfg == "tty" {
         "tty"
     } else if input.graph_symbol_proc_cfg != "default" {
-        &input.graph_symbol_proc_cfg
+        input.graph_symbol_proc_cfg
     } else {
-        &input.graph_symbol_cfg
+        input.graph_symbol_cfg
     };
     let table_key = format!("{base_symbol}_up");
     let graph_bg = graph_table(&table_key)
@@ -1467,8 +1551,8 @@ pub fn draw_proc(
 
     // Follow/restore resolution (pure; caller persists the Config half).
     let (start0, selected0, _followed0, _fp0, _fpid0, _sr0, select_max0, banner) = resolve_follow(
-        &input.procs,
-        input.filter.as_deref(),
+        input.procs,
+        input.filter,
         f.proc_tree,
         f.follow_process,
         f.pause_proc_list,
@@ -1530,7 +1614,7 @@ pub fn draw_proc(
             f.common.rounded,
         );
         let fw = field_widths(width, f.show_graphs);
-        if let Some(detail) = &input.detailed {
+        if let Some(detail) = input.detailed {
             let dgraph_width = (width / 3).max(width - 121);
             let d_width = width - dgraph_width - 1;
             let d_x = x + dgraph_width + 1;
@@ -1556,39 +1640,26 @@ pub fn draw_proc(
         }
         let sort_pos = x + width - input.sorting.len() as i64 - 8;
         out += &render_titles(
+            input,
             y,
             x,
             width,
             height,
             selected,
             sort_pos,
+            is_last,
             &fw,
-            &input.sorting,
-            f.per_core,
-            f.reversed,
-            f.proc_tree,
-            f.vim_keys,
-            f.pause_proc_list,
-            f.follow_process,
-            f.filtering,
-            input.filter.as_deref(),
-            f.show_graphs,
-            f.mem_bytes,
-            input.followed_pid,
-            input.detailed_pid,
-            input.should_return,
             &pal,
             &title_left,
             &title_right,
             &title_left_down,
             &title_right_down,
-            is_last,
             maps,
         );
     }
 
     // Detail values (per-frame, :1993+).
-    if let Some(detail) = &input.detailed {
+    if let Some(detail) = input.detailed {
         let dgraph_width = (width / 3).max(width - 121);
         let d_width = width - dgraph_width - 1;
         let d_x = x + dgraph_width + 1;
@@ -1615,7 +1686,7 @@ pub fn draw_proc(
     let process_grad = gradient("process", theme, lowcolor);
     let proc_color_grad = gradient("proc_color", theme, lowcolor);
     let proc_fade = gradient("proc", theme, lowcolor);
-    let filter_ref = input.filter.as_deref();
+    let filter_ref = input.filter;
     let list_len = input.procs.len();
     let fw = field_widths(width, f.show_graphs);
     let mut lc = 0i64;
@@ -1623,7 +1694,7 @@ pub fn draw_proc(
     // `selected_pid` static (:2051-2055): the selected row's pid, used by
     // the detail hide button below; reset when nothing is selected.
     let mut selected_pid = 0u64;
-    for p in &input.procs {
+    for p in input.procs {
         if is_hidden(p, filter_ref, f.proc_tree, list_len) {
             continue;
         }

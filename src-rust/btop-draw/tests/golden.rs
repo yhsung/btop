@@ -1413,13 +1413,13 @@ fn fixed_procs() -> Vec<ProcInfo> {
     ]
 }
 
-fn proc_test_input(procs: Vec<ProcInfo>) -> (ProcDrawInput, Vec<MouseMap>) {
+fn proc_test_input(procs: &[ProcInfo]) -> (ProcDrawInput<'_>, Vec<MouseMap>) {
     (
         ProcDrawInput {
             procs,
             numpids: 3,
             total_mem: 0,
-            sorting: "pid".to_string(),
+            sorting: "pid",
             start: 0,
             selected: 0,
             followed: 0,
@@ -1433,8 +1433,8 @@ fn proc_test_input(procs: Vec<ProcInfo>) -> (ProcDrawInput, Vec<MouseMap>) {
             prev_banner: false,
             filter: None,
             detailed: None,
-            graph_symbol_cfg: "braille".to_string(),
-            graph_symbol_proc_cfg: "default".to_string(),
+            graph_symbol_cfg: "braille",
+            graph_symbol_proc_cfg: "default",
             flags: ProcFlags::harness_defaults(),
             force_redraw: true,
             data_same: false,
@@ -1446,7 +1446,8 @@ fn proc_test_input(procs: Vec<ProcInfo>) -> (ProcDrawInput, Vec<MouseMap>) {
 
 #[test]
 fn byte_parity_proc_S0() {
-    let (input, mut maps) = proc_test_input(fixed_procs());
+    let procs = fixed_procs();
+    let (input, mut maps) = proc_test_input(&procs);
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
     let out = draw_proc(&input, &layout.proc, &theme, &mut maps);
@@ -1455,7 +1456,8 @@ fn byte_parity_proc_S0() {
 
 #[test]
 fn byte_parity_proc_S1() {
-    let (input, mut maps) = proc_test_input(fixed_procs());
+    let procs = fixed_procs();
+    let (input, mut maps) = proc_test_input(&procs);
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(160, 48));
     let out = draw_proc(&input, &layout.proc, &theme, &mut maps);
@@ -1464,9 +1466,10 @@ fn byte_parity_proc_S1() {
 
 #[test]
 fn proc_data_same_returns_prev() {
-    let (mut input, mut maps) = proc_test_input(fixed_procs());
+    let procs = fixed_procs();
+    let (mut input, mut maps) = proc_test_input(&procs);
     input.data_same = true;
-    input.prev = Some("CACHED".to_string());
+    input.prev = Some("CACHED");
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
     assert_eq!(draw_proc(&input, &layout.proc, &theme, &mut maps), "CACHED");
@@ -1475,7 +1478,8 @@ fn proc_data_same_returns_prev() {
 #[test]
 fn proc_harness_mouse_maps() {
     // selected=0, no detail: f + r/e sort buttons + left/right arrows.
-    let (input, mut maps) = proc_test_input(fixed_procs());
+    let procs = fixed_procs();
+    let (input, mut maps) = proc_test_input(&procs);
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
     draw_proc(&input, &layout.proc, &theme, &mut maps);
@@ -1494,7 +1498,8 @@ fn proc_harness_mouse_maps() {
 #[test]
 fn proc_smoke_selection_moved() {
     // selected=1: first row highlighted, bottom action maps appear.
-    let (mut input, mut maps) = proc_test_input(fixed_procs());
+    let procs = fixed_procs();
+    let (mut input, mut maps) = proc_test_input(&procs);
     input.selected = 1;
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
@@ -1512,7 +1517,8 @@ fn proc_smoke_selection_moved() {
 #[test]
 fn proc_smoke_empty_list() {
     // No processes: header + blanks + 0/0 counter, no panic.
-    let (mut input, mut maps) = proc_test_input(vec![]);
+    let procs: Vec<ProcInfo> = vec![];
+    let (mut input, mut maps) = proc_test_input(&procs);
     input.numpids = 0;
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
@@ -1525,8 +1531,9 @@ fn proc_smoke_empty_list() {
 fn proc_smoke_filter_active() {
     // Stored filter text shows in the title with a delete map; rows that
     // miss it are hidden (filtered-flag computation).
-    let (mut input, mut maps) = proc_test_input(fixed_procs());
-    input.filter = Some("btop".to_string());
+    let procs = fixed_procs();
+    let (mut input, mut maps) = proc_test_input(&procs);
+    input.filter = Some("btop");
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
     let out = draw_proc(&input, &layout.proc, &theme, &mut maps);
@@ -1543,9 +1550,9 @@ fn proc_smoke_filter_active() {
         "delete map missing: {actions:?}"
     );
     // Filtering (TextEdit) mode: enter affordance, no f/delete maps.
-    let (mut input2, mut maps2) = proc_test_input(fixed_procs());
+    let (mut input2, mut maps2) = proc_test_input(&procs);
     input2.flags.filtering = true;
-    input2.filter = Some("bt".to_string());
+    input2.filter = Some("bt");
     let out2 = draw_proc(&input2, &layout.proc, &theme, &mut maps2);
     assert!(out2.contains('↵'), "filtering enter marker missing");
     assert!(
@@ -1562,9 +1569,9 @@ fn proc_smoke_tree_and_name_sorting() {
     procs[0].prefix = "├─ ".to_string();
     procs[1].prefix = "│ ├─ ".to_string();
     procs[2].prefix = "└─ ".to_string();
-    let (mut input, mut maps) = proc_test_input(procs);
+    let (mut input, mut maps) = proc_test_input(&procs);
     input.flags.proc_tree = true;
-    input.sorting = "name".to_string();
+    input.sorting = "name";
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
     let out = draw_proc(&input, &layout.proc, &theme, &mut maps);
@@ -1575,7 +1582,7 @@ fn proc_smoke_tree_and_name_sorting() {
     // tree_index sentinel hides rows in tree mode.
     let mut procs2 = fixed_procs();
     procs2[1].tree_index = 3;
-    let (mut input2, mut maps2) = proc_test_input(procs2);
+    let (mut input2, mut maps2) = proc_test_input(&procs2);
     input2.flags.proc_tree = true;
     let out2 = draw_proc(&input2, &layout.proc, &theme, &mut maps2);
     assert!(!out2.contains("777"), "sentinel row should be hidden");
@@ -1599,8 +1606,8 @@ fn proc_smoke_detail_open() {
         cpu_history: vec![10, 12, 11, 13, 12, 14, 13],
         mem_history: vec![67108864; 7],
     };
-    let (mut input, mut maps) = proc_test_input(procs);
-    input.detailed = Some(detail);
+    let (mut input, mut maps) = proc_test_input(&procs);
+    input.detailed = Some(&detail);
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(160, 48));
     let out = draw_proc(&input, &layout.proc, &theme, &mut maps);
@@ -1616,7 +1623,8 @@ fn proc_smoke_detail_open() {
 #[test]
 fn proc_smoke_pause_banner_and_percent_mem() {
     // Paused list: banner row + select_max shrink; percent mem mode.
-    let (mut input, mut maps) = proc_test_input(fixed_procs());
+    let procs = fixed_procs();
+    let (mut input, mut maps) = proc_test_input(&procs);
     input.flags.pause_proc_list = true;
     input.flags.mem_bytes = false;
     let theme = default_theme();
