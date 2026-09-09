@@ -48,6 +48,44 @@ Determinism notes: theme list headless is `[Default, TTY]` only
 first page, help shows page 1 of 3. Proven by the same double-run diff
 gate in `capture.sh` (no extra normalization needed).
 
+## Proc detail/tree/filter fixtures
+
+`proc_detail.ans`, `proc_tree.ans`, `proc_filtered.ans` capture
+`Proc::draw` at **S0 (100x30)** with the base 3-proc fixture
+(`launchd` pid 1, `kernel_task` pid 777, `btop` pid 4242, pid order).
+S0 suffices: proc box is h=20 there, and the detail header costs 8 rows,
+leaving a 12-row list; tree/filter are list-only. Each scenario runs its
+own `setup(S0, "cpu mem net proc")` pass and resets its flips afterwards,
+so the menu block below still starts from defaults.
+
+Setup deltas (all verified against `src/btop_draw.cpp` Proc::draw state):
+
+- `proc_detail`: `show_detailed=true` + `detailed_pid=4242` **plus**
+  `Proc::detailed.last_pid=4242` (draw gates on
+  `show_detailed && detailed.last_pid == detailed_pid`). `detailed.entry`
+  is the `btop` proc_info; `status="Running"`, `elapsed="12:34"`,
+  `parent="launchd"`, `io_read="1.0M"`, `io_write="512K"`,
+  `memory="64M"`, fixed 8-sample `cpu_percent`/`mem_bytes`,
+  `first_mem=134217728`. At S0 widths the detail labels show
+  Status/Elapsed/IO-R only (`item_fit=3`); terminate/kill/follow buttons
+  are width-gated out.
+- `proc_tree`: `proc_tree=true` + manual tree fields (the harness bypasses
+  `collect()`, so `_tree_gen`/`_collect_prefixes` output is staged by
+  hand): `ppid 0/1/1`, `depth 0/1/1`, prefixes `[-]─` / ` ├─` / ` └─`,
+  `tree_index 0/1/2`, `collapsed=false`, `filtered=false`.
+- `proc_filtered`: committed-filter view — `proc_filter="btop"` with
+  `proc_filtering=false` (editing mode would render the TextEdit cursor),
+  `plist[0..1].filtered=true`, `numpids=1`, `filter_found=2` (mirrors
+  `collect()`'s `numpids = size - filter_found`).
+
+Fidelity note: `proc_detail.ans` contains **2 embedded NUL bytes**. The
+detail header calls `uresize(name, n, wide=true)`, whose wide path
+(`btop_tools.cpp:269-288`) sizes the output to the wchar count including
+the terminator, leaving `wcstombs`' `\0` embedded in the `std::string`.
+Real btop writes size-aware so it is unaffected; the harness `emit()`
+uses `fwrite` (not `printf %s`) to preserve the faithful bytes. Rust
+`String` can hold U+0000, so transcription must compare NUL-inclusive.
+
 ## Regenerating
 
 `capture.sh` takes ONE argument — the harness binary — and derives the

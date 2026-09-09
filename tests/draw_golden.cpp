@@ -64,7 +64,13 @@ constexpr int S1_W = 160, S1_H = 48; // large terminal
 // ::Cpu/::Mem/::Net definitions in src/btop_draw.cpp.)
 
 void emit(const string& name, const string& out) {
-	printf("@@BEGIN:%s@@\n%s\n@@END:%s@@\n", name.c_str(), out.c_str(), name.c_str());
+	// NUL-safe: Proc detail header calls uresize(name, n, wide=true), whose
+	// wide path resizes to wchar count and leaves wcstombs' terminator
+	// embedded (btop_tools.cpp:269-288), so `out` can contain '\0'. printf
+	// %s would truncate there; fwrite preserves the faithful bytes.
+	printf("@@BEGIN:%s@@\n", name.c_str());
+	fwrite(out.c_str(), 1, out.size(), stdout);
+	printf("\n@@END:%s@@\n", name.c_str());
 }
 
 // Fixed 8-value graph dataset shared by the graph scenarios.
@@ -396,6 +402,77 @@ int main() {
 	{
 		const auto gpu = fixed_gpu();
 		emit("gpu_S1", Gpu::draw(gpu, 0, true, false));
+	}
+
+	// Proc detail/tree/filter scenarios at S0 (100x30, proc h=20 per
+	// calcSizes_S0 — detail overhead is 8 rows, leaving a 12-row list, so
+	// S0 suffices; tree/filter are list-only). Each does its own setup()
+	// for an independent size pass. State is reset after each emit so the
+	// menu block below still starts from defaults.
+	{
+		setup(S0_W, S0_H, "cpu mem net proc");
+		Config::set("show_detailed", true);
+		Config::set("detailed_pid", 4242);
+		auto plist = fixed_procs();
+		Proc::detailed = {};
+		Proc::detailed.last_pid = 4242;
+		Proc::detailed.entry = plist[2];
+		Proc::detailed.status = "Running";
+		Proc::detailed.elapsed = "12:34";
+		Proc::detailed.parent = "launchd";
+		Proc::detailed.io_read = "1.0M";
+		Proc::detailed.io_write = "512K";
+		Proc::detailed.memory = "64M";
+		Proc::detailed.cpu_percent = {10, 20, 30, 40, 50, 60, 70, 80};
+		Proc::detailed.mem_bytes = {67108864, 67108864, 67108864, 67108864,
+									67108864, 67108864, 67108864, 67108864};
+		Proc::detailed.first_mem = 134217728;
+		Proc::numpids = 3;
+		emit("proc_detail", Proc::draw(plist, true, false));
+		Config::set("show_detailed", false);
+		Config::set("detailed_pid", 0);
+		Proc::detailed = {};
+	}
+	{
+		setup(S0_W, S0_H, "cpu mem net proc");
+		Config::set("proc_tree", true);
+		auto plist = fixed_procs();
+		plist[0].ppid = 0;
+		plist[0].depth = 0;
+		plist[0].prefix = "[-]\u2500";
+		plist[0].tree_index = 0;
+		plist[0].collapsed = false;
+		plist[0].filtered = false;
+		plist[1].ppid = 1;
+		plist[1].depth = 1;
+		plist[1].prefix = " \u251c\u2500";
+		plist[1].tree_index = 1;
+		plist[1].collapsed = false;
+		plist[1].filtered = false;
+		plist[2].ppid = 1;
+		plist[2].depth = 1;
+		plist[2].prefix = " \u2514\u2500";
+		plist[2].tree_index = 2;
+		plist[2].collapsed = false;
+		plist[2].filtered = false;
+		Proc::numpids = 3;
+		emit("proc_tree", Proc::draw(plist, true, false));
+		Config::set("proc_tree", false);
+	}
+	{
+		setup(S0_W, S0_H, "cpu mem net proc");
+		Config::set("proc_filter", "btop"s);
+		Config::set("proc_filtering", false);
+		auto plist = fixed_procs();
+		plist[0].filtered = true;
+		plist[1].filtered = true;
+		plist[2].filtered = false;
+		Proc::numpids = 1;
+		Proc::filter_found = 2;
+		emit("proc_filtered", Proc::draw(plist, true, false));
+		Config::set("proc_filter", ""s);
+		Proc::numpids = 3;
+		Proc::filter_found = 0;
 	}
 
 	// Menu overlay scenarios at S0 (100x30, Default theme, same Config
