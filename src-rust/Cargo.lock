@@ -30,5 +30,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "btop-menu"
+version = "0.1.0"
+dependencies = [
+ "btop-config",
+ "btop-draw",
+ "btop-input",
+]
+
+[[package]]
 name = "btop-tools"
 version = "0.1.0"
