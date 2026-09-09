@@ -32,6 +32,7 @@
 
 #include "btop_config.hpp"
 #include "btop_draw.hpp"
+#include "btop_menu.hpp"
 #include "btop_shared.hpp"
 #include "btop_theme.hpp"
 #include "btop_tools.hpp"
@@ -395,6 +396,45 @@ int main() {
 	{
 		const auto gpu = fixed_gpu();
 		emit("gpu_S1", Gpu::draw(gpu, 0, true, false));
+	}
+
+	// Menu overlay scenarios at S0 (100x30, Default theme, same Config
+	// overrides as setup()). Capture mechanics: Menu::show(menu) sets the
+	// menuMask bit and calls Menu::process("") which synchronously runs the
+	// menu body — the body populates Global::overlay when redraw is set.
+	// No Runner::run("overlay") call is needed to POPULATE the string
+	// (process() does call Runner::run("all", true, true) afterwards, which
+	// is a harmless headless no-op: Runner::active is false so the waits
+	// return immediately and thread_trigger() signals no thread).
+	// Between scenarios the menu is closed via process("escape") so the
+	// next show() starts fresh (menuMask/bg/currentMenu reset).
+	setup(S0_W, S0_H, "cpu mem net proc");
+	{
+		Menu::show(Menu::Main);
+		emit("menu_main", Global::overlay);
+		Menu::process("escape");
+	}
+	{
+		Menu::show(Menu::Options);
+		emit("menu_options", Global::overlay);
+		Menu::process("escape");
+	}
+	{
+		Menu::show(Menu::Help);
+		emit("menu_help", Global::overlay);
+		Menu::process("escape");
+	}
+	{
+		Menu::msgBox ok(45, Menu::msgBox::OK,
+						{"Golden msgbox line one", "Golden msgbox line two"},
+						"golden ok");
+		emit("msgbox_ok", ok());
+	}
+	{
+		Menu::msgBox yesno(45, Menu::msgBox::YES_NO,
+						   {"Golden msgbox line one", "Golden msgbox line two"},
+						   "golden yesno");
+		emit("msgbox_yesno", yesno());
 	}
 
 	return 0;

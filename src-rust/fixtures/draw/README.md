@@ -23,6 +23,31 @@ on the first `Cpu::draw` call — clearing before the first draw pins it
 the first draw would silently still observe `false`, so keep the
 clear-first ordering.
 
+## Menu overlay fixtures
+
+`menu_main.ans`, `menu_options.ans`, `menu_help.ans` capture
+`Global::overlay` after `Menu::show(Main|Options|Help)` at **100x30,
+Default theme**, with the same `setup()` Config overrides as the box
+scenarios (clock/uptime/battery/watts/freq off, fixed boxes
+`"cpu mem net proc"` + `Draw::calcSizes()`). `show()` alone populates
+the string: it sets the menuMask bit and calls `Menu::process("")`,
+whose menu body fills `Global::overlay` synchronously — no
+`Runner::run("overlay")` needed to populate (the trailing
+`Runner::run("all", ...)` inside `process()` is a harmless headless
+no-op). Between scenarios the harness closes the menu with
+`Menu::process("escape")` so the next `show()` starts fresh.
+
+`msgbox_ok.ans` / `msgbox_yesno.ans` capture standalone
+`Menu::msgBox(45, OK|YES_NO, {"Golden msgbox line one",
+"Golden msgbox line two"}, "golden ok|yesno")()` — width 45, fixed
+ASCII content + titles.
+
+Determinism notes: theme list headless is `[Default, TTY]` only
+(`Theme::updateThemes()` skips empty theme dirs), so the options page
+(`color_theme` idx `1/2`) is stable; options shows the general-category
+first page, help shows page 1 of 3. Proven by the same double-run diff
+gate in `capture.sh` (no extra normalization needed).
+
 ## Regenerating
 
 `capture.sh` takes ONE argument — the harness binary — and derives the
