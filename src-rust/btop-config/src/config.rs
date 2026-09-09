@@ -2,6 +2,65 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Milliseconds in one day. C++ `ONE_DAY_MILLIS` (src/btop_config.hpp:64):
+/// `1000 * 60 * 60 * 24`.
+pub const ONE_DAY_MILLIS: i64 = 86_400_000;
+
+/// Valid `log_level` values (src/btop_log.cpp:160).
+const LOG_LEVELS: &[&str] = &["DISABLED", "ERROR", "WARNING", "INFO", "DEBUG"];
+/// Valid `graph_symbol` values (src/btop_config.cpp:50).
+const GRAPH_SYMBOLS: &[&str] = &["braille", "block", "tty"];
+/// Valid `graph_symbol_*` values including `"default"` (`:51`).
+const GRAPH_SYMBOLS_DEF: &[&str] = &["default", "braille", "block", "tty"];
+/// Valid `show_gpu_info` values (`:63`).
+const SHOW_GPU_VALUES: &[&str] = &["Auto", "On", "Off"];
+
+/// ASCII-digits-only check. C++ `isint` (src/btop_tools.hpp:278-280), also
+/// relied on by `Config::load` above.
+fn is_int(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+enum Stoi {
+    Ok(i64),
+    Invalid,
+    OutOfRange,
+}
+
+/// C++ `stoi` semantics relied on by `intValid` (src/btop_config.cpp:559-575):
+/// skip leading whitespace, accept an optional sign, parse the digit run
+/// (trailing garbage ignored); no digits → `invalid_argument`, overflow of
+/// the `int` (`i32`) range → `out_of_range`.
+fn parse_stoi(value: &str) -> Stoi {
+    let s = value.trim_start();
+    let s = match s.strip_prefix(['+', '-']) {
+        Some(rest) => rest,
+        None => s,
+    };
+    let negative = value.trim_start().starts_with('-');
+    let digits: String = s
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .map(char::from)
+        .collect();
+    if digits.is_empty() {
+        return Stoi::Invalid;
+    }
+    match digits.parse::<i64>() {
+        Ok(mut v) => {
+            if negative {
+                v = -v;
+            }
+            if v < i32::MIN as i64 || v > i32::MAX as i64 {
+                Stoi::OutOfRange
+            } else {
+                Stoi::Ok(v)
+            }
+        }
+        Err(_) => Stoi::OutOfRange,
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Config {
     pub strings: HashMap<String, String>,
@@ -11,6 +70,7 @@ pub struct Config {
     pub ints: HashMap<String, i64>,
     pub ints_tmp: HashMap<String, i64>,
     locked: bool,
+    last_error: String,
 }
 
 impl Config {
@@ -159,6 +219,184 @@ impl Config {
         }
         warnings
     }
+
+    /// Format a value as the options menu shows it. Mirrors `getAsString`
+    /// (src/btop_config.cpp:670-678): bools as `"True"`/`"False"`, ints plain
+    /// (`to_string`, no separators), strings raw (NOT quoted — verified:
+    /// `:675-676` returns `it->second` directly). Missing names yield `None`
+    /// (C++ returns `""`, `:677`).
+    pub fn get_as_string(&self, name: &str) -> Option<String> {
+        if let Some(v) = self.bools.get(name) {
+            return Some(if *v { "True".into() } else { "False".into() });
+        }
+        if let Some(v) = self.ints.get(name) {
+            return Some(v.to_string());
+        }
+        self.strings.get(name).cloned()
+    }
+
+    /// Last validation failure text. Mirrors `Config::validError` state
+    /// (src/btop_config.cpp:557): set as a side effect of [`Config::int_valid`]
+    /// / [`Config::string_valid`], read after a `false` return
+    /// (src/btop_menu.cpp:1409,1493). `name` is accepted for call-site
+    /// symmetry with the validators; the stored last error is returned.
+    /// Starts empty (like C++); a passing validation leaves it untouched
+    /// (C++ only assigns on failure arms).
+    pub fn valid_error(&self, _name: &str) -> String {
+        self.last_error.clone()
+    }
+
+    /// Validate an int option's text form. Mirrors `intValid`
+    /// (src/btop_config.cpp:559-593): `stoi` parsing (leading whitespace and
+    /// an optional sign accepted, trailing garbage ignored, `i32` range —
+    /// see `parse_stoi`), then the per-key bounds below. Unknown names pass
+    /// (`:589-590` fall through to `return true`).
+    ///
+    /// Rules transcribed: `update_ms` in `[100, ONE_DAY_MILLIS]` (`:577-581`;
+    /// `ONE_DAY_MILLIS = 1000*60*60*24 = 86400000`, src/btop_config.hpp:64),
+    /// `proc_tree_auto_collapse` in `[0, 10000]` (`:583-587`).
+    pub fn int_valid(&mut self, name: &str, value: &str) -> bool {
+        let i_value = match parse_stoi(value) {
+            Stoi::Ok(v) => v,
+            Stoi::Invalid => {
+                self.last_error = "Invalid numerical value!".into();
+                return false;
+            }
+            Stoi::OutOfRange => {
+                self.last_error = "Value out of range!".into();
+                return false;
+            }
+        };
+        if name == "update_ms" && i_value < 100 {
+            self.last_error = "Config value update_ms set too low (<100).".into();
+        } else if name == "update_ms" && i_value > ONE_DAY_MILLIS {
+            self.last_error = format!("Config value update_ms set too high (>{ONE_DAY_MILLIS}).");
+        } else if name == "proc_tree_auto_collapse" && i_value < 0 {
+            self.last_error = "Config value proc_tree_auto_collapse must be >= 0.".into();
+        } else if name == "proc_tree_auto_collapse" && i_value > 10_000 {
+            self.last_error = "Config value proc_tree_auto_collapse set too high (>10000).".into();
+        } else {
+            return true;
+        }
+        false
+    }
+
+    /// Validate a string option's text form. Mirrors `stringValid`
+    /// (src/btop_config.cpp:600-668). Rules transcribed:
+    /// - `log_level` in `{"DISABLED","ERROR","WARNING","INFO","DEBUG"}`
+    ///   (src/btop_log.cpp:160; error at `:601-602`),
+    /// - `graph_symbol` in `{"braille","block","tty"}`
+    ///   (src/btop_config.cpp:50; error at `:604-605`),
+    /// - `graph_symbol_*` in `{"default","braille","block","tty"}`
+    ///   (`:51`; error at `:607-608`),
+    /// - `show_gpu_info` in `{"Auto","On","Off"}` (`:63`; error at `:622-623`;
+    ///   C++ gates this arm on `GPU_SUPPORT`, the port applies it
+    ///   unconditionally),
+    /// - `presets` via `presetsValid` (`:476-512`; errors at `:481-504`),
+    /// - `cpu_core_map` (`:629-645`) and `io_graph_speeds` (`:646-662`).
+    /// Unknown names pass (`:664-665` fall through to `return true`).
+    ///
+    /// Deliberate deviations: `shown_boxes` always passes — C++ checks
+    /// terminal size and live box state (`:610-619`, needs `Term` +
+    /// `set_boxes`); `presetsValid` validates only (C++ also stores the
+    /// parsed list, `:510`). NOTE: `temp_scale` has NO `stringValid` rule in
+    /// C++ (verified by reading `:600-668`): its value set (`temp_scales`,
+    /// `:58`) is enforced only via menu option lists
+    /// (src/btop_menu.cpp:1318), so any string passes here too.
+    pub fn string_valid(&mut self, name: &str, value: &str) -> bool {
+        if name == "log_level" && !LOG_LEVELS.contains(&value) {
+            self.last_error = format!("Invalid log_level: {value}");
+        } else if name == "graph_symbol" && !GRAPH_SYMBOLS.contains(&value) {
+            self.last_error = format!("Invalid graph symbol identifier: {value}");
+        } else if name.starts_with("graph_symbol_")
+            && value != "default"
+            && !GRAPH_SYMBOLS.contains(&value)
+        {
+            self.last_error = format!("Invalid graph symbol identifier for {name}: {value}");
+        } else if name == "show_gpu_info" && !SHOW_GPU_VALUES.contains(&value) {
+            self.last_error = format!("Invalid value for show_gpu_info: {value}");
+        } else if name == "presets" && !self.presets_valid(value) {
+            return false;
+        } else if name == "cpu_core_map" {
+            for map in value.split(' ').filter(|s| !s.is_empty()) {
+                let parts: Vec<&str> = map.split(':').filter(|s| !s.is_empty()).collect();
+                if parts.len() != 2 || !is_int(parts[0]) || !is_int(parts[1]) {
+                    self.last_error = "Invalid formatting of cpu_core_map!".into();
+                    return false;
+                }
+            }
+            return true;
+        } else if name == "io_graph_speeds" {
+            for map in value.split(' ').filter(|s| !s.is_empty()) {
+                let parts: Vec<&str> = map.split(':').filter(|s| !s.is_empty()).collect();
+                if parts.len() != 2 || parts[0].is_empty() || !is_int(parts[1]) {
+                    self.last_error = "Invalid formatting of io_graph_speeds!".into();
+                    return false;
+                }
+            }
+            return true;
+        } else {
+            return true;
+        }
+        false
+    }
+
+    /// Validate a `presets` string. Mirrors `presetsValid`
+    /// (src/btop_config.cpp:476-512): at most 9 space-separated presets
+    /// (`:479-483`), at most 4 comma boxes each (`:484-488`), each box three
+    /// colon fields (`:489-493`), box name in
+    /// `cpu/mem/net/proc/gpu0..gpu5` (`:494-497`), position `0`/`1`
+    /// (`:498-501`), graph in `valid_graph_symbols_def` (`:502-505`).
+    /// Validation only — C++ additionally stores the parsed list (`:510`),
+    /// which has no Rust counterpart yet.
+    fn presets_valid(&mut self, value: &str) -> bool {
+        let mut count = 0;
+        for preset in value.split(' ').filter(|s| !s.is_empty()) {
+            count += 1;
+            if count > 9 {
+                self.last_error = "Too many presets entered!".into();
+                return false;
+            }
+            let mut boxes = 0;
+            for b in preset.split(',').filter(|s| !s.is_empty()) {
+                boxes += 1;
+                if boxes > 4 {
+                    self.last_error = "Too many boxes entered for preset!".into();
+                    return false;
+                }
+                let vals: Vec<&str> = b.split(':').filter(|s| !s.is_empty()).collect();
+                if vals.len() != 3 {
+                    self.last_error = "Malformatted preset in config value presets!".into();
+                    return false;
+                }
+                if !matches!(
+                    vals[0],
+                    "cpu"
+                        | "mem"
+                        | "net"
+                        | "proc"
+                        | "gpu0"
+                        | "gpu1"
+                        | "gpu2"
+                        | "gpu3"
+                        | "gpu4"
+                        | "gpu5"
+                ) {
+                    self.last_error = "Invalid box name in config value presets!".into();
+                    return false;
+                }
+                if vals[1] != "0" && vals[1] != "1" {
+                    self.last_error = "Invalid position value in config value presets!".into();
+                    return false;
+                }
+                if !GRAPH_SYMBOLS_DEF.contains(&vals[2]) {
+                    self.last_error = "Invalid graph name in config value presets!".into();
+                    return false;
+                }
+            }
+        }
+        true
+    }
 }
 
 #[cfg(test)]
@@ -205,5 +443,123 @@ mod tests {
         let mut c = sample();
         c.flip("theme_background");
         assert_eq!(c.get_b("theme_background"), Some(false));
+    }
+
+    #[test]
+    fn get_as_string_formats_per_type() {
+        // Mirrors getAsString (src/btop_config.cpp:670-678): bools as
+        // "True"/"False", ints plain, strings raw, missing as "".
+        let mut c = sample();
+        c.set_b("theme_background", false);
+        assert_eq!(
+            c.get_as_string("theme_background").as_deref(),
+            Some("False")
+        );
+        c.set_b("theme_background", true);
+        assert_eq!(c.get_as_string("theme_background").as_deref(), Some("True"));
+        assert_eq!(c.get_as_string("update_ms").as_deref(), Some("2000"));
+        assert_eq!(c.get_as_string("color_theme").as_deref(), Some("Default"));
+        assert_eq!(c.get_as_string("nope"), None);
+    }
+
+    #[test]
+    fn int_valid_update_ms_bounds() {
+        // Bounds from intValid (src/btop_config.cpp:577-581).
+        let mut c = sample();
+        assert!(c.int_valid("update_ms", "100"));
+        assert!(c.int_valid("update_ms", "86400000"));
+        assert!(!c.int_valid("update_ms", "99"));
+        assert_eq!(
+            c.valid_error("update_ms"),
+            "Config value update_ms set too low (<100)."
+        );
+        assert!(!c.int_valid("update_ms", "86400001"));
+        assert_eq!(
+            c.valid_error("update_ms"),
+            "Config value update_ms set too high (>86400000)."
+        );
+    }
+
+    #[test]
+    fn int_valid_proc_tree_auto_collapse_bounds() {
+        // Bounds from intValid (src/btop_config.cpp:583-587).
+        let mut c = sample();
+        c.ints.insert("proc_tree_auto_collapse".into(), 0);
+        assert!(c.int_valid("proc_tree_auto_collapse", "0"));
+        assert!(c.int_valid("proc_tree_auto_collapse", "10000"));
+        assert!(!c.int_valid("proc_tree_auto_collapse", "-1"));
+        assert_eq!(
+            c.valid_error("proc_tree_auto_collapse"),
+            "Config value proc_tree_auto_collapse must be >= 0."
+        );
+        assert!(!c.int_valid("proc_tree_auto_collapse", "10001"));
+        assert_eq!(
+            c.valid_error("proc_tree_auto_collapse"),
+            "Config value proc_tree_auto_collapse set too high (>10000)."
+        );
+    }
+
+    #[test]
+    fn int_valid_rejects_non_numeric() {
+        // stoi failure arms (src/btop_config.cpp:559-575).
+        let mut c = sample();
+        assert!(!c.int_valid("update_ms", "abc"));
+        assert_eq!(c.valid_error("update_ms"), "Invalid numerical value!");
+        assert!(!c.int_valid("update_ms", "9999999999999999999999"));
+        assert_eq!(c.valid_error("update_ms"), "Value out of range!");
+        // Unknown names pass (C++ falls through to `return true`, :589-590).
+        assert!(c.int_valid("whatever", "12x"));
+    }
+
+    #[test]
+    fn string_valid_log_level_and_graph_symbols() {
+        // Set-membership arms (src/btop_config.cpp:600-608).
+        let mut c = sample();
+        assert!(c.string_valid("log_level", "DEBUG"));
+        assert!(!c.string_valid("log_level", "VERBOSE"));
+        assert_eq!(c.valid_error("log_level"), "Invalid log_level: VERBOSE");
+        assert!(c.string_valid("graph_symbol", "braille"));
+        assert!(!c.string_valid("graph_symbol", "emoji"));
+        assert_eq!(
+            c.valid_error("graph_symbol"),
+            "Invalid graph symbol identifier: emoji"
+        );
+        assert!(c.string_valid("graph_symbol_cpu", "default"));
+        assert!(!c.string_valid("graph_symbol_cpu", "emoji"));
+        assert_eq!(
+            c.valid_error("graph_symbol_cpu"),
+            "Invalid graph symbol identifier for graph_symbol_cpu: emoji"
+        );
+    }
+
+    #[test]
+    fn string_valid_maps_and_presets() {
+        // cpu_core_map / io_graph_speeds (src/btop_config.cpp:629-662) and
+        // presetsValid (src/btop_config.cpp:476-512).
+        let mut c = sample();
+        assert!(c.string_valid("cpu_core_map", "0:0 1:2"));
+        assert!(!c.string_valid("cpu_core_map", "0-x"));
+        assert_eq!(
+            c.valid_error("cpu_core_map"),
+            "Invalid formatting of cpu_core_map!"
+        );
+        assert!(c.string_valid("io_graph_speeds", "eth0:100"));
+        assert!(!c.string_valid("io_graph_speeds", "eth0:x"));
+        assert_eq!(
+            c.valid_error("io_graph_speeds"),
+            "Invalid formatting of io_graph_speeds!"
+        );
+        assert!(c.string_valid("presets", "cpu:0:default,mem:0:braille"));
+        assert!(!c.string_valid("presets", "bogus:0:default"));
+        assert_eq!(
+            c.valid_error("presets"),
+            "Invalid box name in config value presets!"
+        );
+        // 10 presets exceeds the 9-preset cap (:479-483).
+        let many = ["cpu:0:default"; 10].join(" ");
+        assert!(!c.string_valid("presets", &many));
+        assert_eq!(c.valid_error("presets"), "Too many presets entered!");
+        // Unknown names pass (C++ falls through to `return true`, :664-665).
+        assert!(c.string_valid("color_theme", "anything"));
     }
 }

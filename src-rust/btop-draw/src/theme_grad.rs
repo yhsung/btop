@@ -28,67 +28,9 @@
 use btop_config::theme::{dec_to_color, hex_to_color};
 use std::collections::HashMap;
 
-/// Built-in "Default" theme hexes, transcribed from `Default_theme`
-/// (src/btop_theme.cpp:52-101). There is no `themes/Default.theme` file;
-/// the map below is the single source (used headless by `setTheme` when
-/// the theme name is `"Default"`).
-///
-/// WARNING: hand copy — bump with btop_theme.cpp `Default_theme`.
-pub fn default_theme() -> HashMap<String, String> {
-    [
-        ("main_bg", "#00"),
-        ("main_fg", "#cc"),
-        ("title", "#ee"),
-        ("hi_fg", "#b54040"),
-        ("selected_bg", "#6a2f2f"),
-        ("selected_fg", "#ee"),
-        ("inactive_fg", "#40"),
-        ("graph_text", "#60"),
-        ("meter_bg", "#40"),
-        ("proc_misc", "#0de756"),
-        ("cpu_box", "#556d59"),
-        ("mem_box", "#6c6c4b"),
-        ("net_box", "#5c588d"),
-        ("proc_box", "#805252"),
-        ("div_line", "#30"),
-        ("temp_start", "#4897d4"),
-        ("temp_mid", "#5474e8"),
-        ("temp_end", "#ff40b6"),
-        ("cpu_start", "#77ca9b"),
-        ("cpu_mid", "#cbc06c"),
-        ("cpu_end", "#dc4c4c"),
-        ("free_start", "#384f21"),
-        ("free_mid", "#b5e685"),
-        ("free_end", "#dcff85"),
-        ("cached_start", "#163350"),
-        ("cached_mid", "#74e6fc"),
-        ("cached_end", "#26c5ff"),
-        ("available_start", "#4e3f0e"),
-        ("available_mid", "#ffd77a"),
-        ("available_end", "#ffb814"),
-        ("used_start", "#592b26"),
-        ("used_mid", "#d9626d"),
-        ("used_end", "#ff4769"),
-        ("download_start", "#291f75"),
-        ("download_mid", "#4f43a3"),
-        ("download_end", "#b0a9de"),
-        ("upload_start", "#620665"),
-        ("upload_mid", "#7d4180"),
-        ("upload_end", "#dcafde"),
-        ("process_start", "#80d0a3"),
-        ("process_mid", "#dcd179"),
-        ("process_end", "#d45454"),
-        ("proc_pause_bg", "#b54040"),
-        ("proc_follow_bg", "#4040b5"),
-        ("proc_banner_bg", "#7b407b"),
-        ("proc_banner_fg", "#ee"),
-        ("followed_bg", "#4040b5"),
-        ("followed_fg", "#ee"),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v.to_string()))
-    .collect()
-}
+/// Re-exported from `btop_config::theme` (moved there so `parse_theme` can
+/// filter unknown keys like C++ `loadFile`); kept here for existing callers.
+pub use btop_config::theme::default_theme;
 
 /// `#RRGGBB` / `#CC` → `[r, g, b]`, mirroring `hex_to_dec`
 /// (src/btop_theme.cpp:218-239): strips one leading char, requires hex
@@ -236,15 +178,6 @@ pub fn gradient(name: &str, theme: &HashMap<String, String>, to_256: bool) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_theme_entry_count_and_spots() {
-        // 48 entries in btop_theme.cpp:52-101; spot-check two hexes.
-        let theme = default_theme();
-        assert_eq!(theme.len(), 48);
-        assert_eq!(theme["main_fg"], "#cc");
-        assert_eq!(theme["cpu_start"], "#77ca9b");
-    }
 
     #[test]
     fn default_gradient_names() {

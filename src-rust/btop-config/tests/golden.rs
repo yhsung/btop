@@ -39,29 +39,27 @@ fn load_invalid_conf_warns() {
 }
 
 #[test]
-fn theme_parse_current_behavior_unknown_keys_kept() {
-    // DOCUMENTED CURRENT BEHAVIOR (M1): unknown `theme[..]` keys are kept;
-    // C++ loadFile (btop_theme.cpp:395-427) drops keys not in Default_theme.
-    // Exact `theme[`...`]=` adjacency is required (C++ tolerates whitespace),
-    // so a bare `otherkey=5` line is ignored. Pinned until the Default_theme
-    // key set lands (later plan). See parse_theme docs.
+fn theme_parse_strict_drops_unknown_and_tolerates_ws() {
+    // Strict loadFile behavior (src/btop_theme.cpp:389-427): keys not in
+    // Default_theme are dropped (:407-410); whitespace around `[`/`]`/`=`
+    // is tolerated (:403 ignore-to-'[', :411 ignore-to-'=', :412 skip-ws).
+    // One-pair quote strip mirrors :414-418.
     let path = std::env::temp_dir().join(format!(
-        "btop_theme_pin_{}_{}.theme",
+        "btop_theme_strict_{}_{}.theme",
         std::process::id(),
         "unknown_keys"
     ));
     std::fs::write(
         &path,
-        "theme[known]=#112233\ntheme[some_unknown_key_xyz]=#445566\notherkey=5\n",
+        "theme[main_bg]=#112233\ntheme[some_unknown_key_xyz]=#445566\ntheme [ title ] = \"#aabbcc\"\ntheme[cpu_start]=#77ca9b\notherkey=5\n# a comment\n",
     )
     .unwrap();
     let map = parse_theme(&path);
     let _ = std::fs::remove_file(&path);
-    assert_eq!(map.get("known").map(String::as_str), Some("#112233"));
-    assert_eq!(
-        map.get("some_unknown_key_xyz").map(String::as_str),
-        Some("#445566")
-    );
+    assert_eq!(map.get("main_bg").map(String::as_str), Some("#112233"));
+    assert!(!map.contains_key("some_unknown_key_xyz"));
+    assert_eq!(map.get("title").map(String::as_str), Some("#aabbcc"));
+    assert_eq!(map.get("cpu_start").map(String::as_str), Some("#77ca9b"));
     assert!(!map.contains_key("otherkey"));
 }
 
