@@ -6,6 +6,7 @@
 
 /// Signal names for the signal-choose menu (`btop_menu.cpp:64-132`).
 /// Index 0 is `"0"`; the remaining 31 are the `__APPLE__` branch (`:114-121`).
+#[rustfmt::skip]
 pub const P_SIGNALS: [&str; 32] = [
     "0",
     "SIGHUP",
@@ -42,6 +43,7 @@ pub const P_SIGNALS: [&str; 32] = [
 ];
 
 /// Help window rows (`btop_menu.cpp:174-221`): `(key, description)`.
+#[rustfmt::skip]
 pub const HELP_TEXT: &[(&str, &str)] = &[
     ("Mouse 1", "Clicks buttons and selects in process list."), // :175
     ("Mouse scroll", "Scrolls any scrollable list/text under cursor."), // :176
@@ -94,6 +96,7 @@ pub const HELP_TEXT: &[(&str, &str)] = &[
 /// Menu banners (`btop_menu.cpp:136-170`), 3 lines per banner.
 /// Indices 0-8 are `menu_normal` (btop, help, quit);
 /// indices 9-17 are `menu_selected` (btop, help, quit).
+#[rustfmt::skip]
 pub const MENU_BANNERS: &[&str] = &[
     "┌─┐┌─┐┌┬┐┬┌─┐┌┐┌┌─┐", // :138
     "│ │├─┘ │ ││ ││││└─┐", // :139
@@ -122,6 +125,7 @@ pub const MENU_BANNERS: &[&str] = &[
 /// Tab 3 = mem (16 options).
 /// Tab 4 = net (8 options).
 /// Tab 5 = proc (15 options).
+#[rustfmt::skip]
 pub const CATEGORIES: &[&[&[&str]]] = &[
     // Tab 0: general
     &[
@@ -257,7 +261,10 @@ mod tests {
         assert_eq!(CATEGORIES[0][0][0], "color_theme");
         assert_eq!(CATEGORIES[1][11][0], "temp_scale");
         assert_eq!(P_SIGNALS[9], "SIGKILL");
-        assert_eq!(HELP_TEXT[0], ("Mouse 1", "Clicks buttons and selects in process list."));
+        assert_eq!(
+            HELP_TEXT[0],
+            ("Mouse 1", "Clicks buttons and selects in process list.")
+        );
         assert_eq!(MENU_BANNERS[0], "┌─┐┌─┐┌┬┐┬┌─┐┌┐┌┌─┐");
     }
 }

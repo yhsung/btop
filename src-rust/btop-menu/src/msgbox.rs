@@ -74,9 +74,7 @@ impl MsgBox {
         }
         if matches!(key, "escape" | "backspace" | "q" | "button2") {
             return MsgReturn::NoEsc;
-        } else if key == "button1"
-            || (self.kind == BoxKind::Ok && key.eq_ignore_ascii_case("o"))
-        {
+        } else if key == "button1" || (self.kind == BoxKind::Ok && key.eq_ignore_ascii_case("o")) {
             return MsgReturn::OkYes;
         } else if matches!(key, "enter" | "space") {
             // C++ returns `selected + 1`, i.e. Invalid(0)+1 = Ok_Yes,
@@ -126,7 +124,11 @@ mod tests {
     fn cancel_keys_return_no_esc_on_any_kind() {
         for kind in [BoxKind::Ok, BoxKind::YesNo, BoxKind::NoYes] {
             for key in ["escape", "backspace", "q", "button2"] {
-                assert_eq!(MsgBox::new(kind).input(key), MsgReturn::NoEsc, "{kind:?} {key}");
+                assert_eq!(
+                    MsgBox::new(kind).input(key),
+                    MsgReturn::NoEsc,
+                    "{kind:?} {key}"
+                );
             }
         }
     }
@@ -209,7 +211,11 @@ mod tests {
     fn unknown_keys_are_invalid() {
         for kind in [BoxKind::Ok, BoxKind::YesNo, BoxKind::NoYes] {
             for key in ["x", "F1", "up", "mouse", "button3"] {
-                assert_eq!(MsgBox::new(kind).input(key), MsgReturn::Invalid, "{kind:?} {key}");
+                assert_eq!(
+                    MsgBox::new(kind).input(key),
+                    MsgReturn::Invalid,
+                    "{kind:?} {key}"
+                );
             }
         }
     }
