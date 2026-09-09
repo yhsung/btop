@@ -512,6 +512,37 @@ mod tests {
     }
 
     #[test]
+    fn valid_error_contract() {
+        // Contract pinned (mirrors Config::validError, src/btop_config.cpp:557):
+        // the stored error is meaningful ONLY after a `false` validation;
+        // a passing validation leaves it untouched; it starts empty.
+        let mut c = sample();
+        assert_eq!(c.valid_error("update_ms"), "");
+        // Failing validation stores the error...
+        assert!(!c.int_valid("update_ms", "99"));
+        assert_eq!(
+            c.valid_error("update_ms"),
+            "Config value update_ms set too low (<100)."
+        );
+        // ...and a passing validation leaves it untouched (C++ only assigns
+        // on the failure arms, never on success).
+        assert!(c.int_valid("update_ms", "2000"));
+        assert_eq!(
+            c.valid_error("update_ms"),
+            "Config value update_ms set too low (<100)."
+        );
+        // Same for the string validator: pass leaves the stale error alone,
+        // fail overwrites it.
+        assert!(c.string_valid("log_level", "DEBUG"));
+        assert_eq!(
+            c.valid_error("log_level"),
+            "Config value update_ms set too low (<100)."
+        );
+        assert!(!c.string_valid("log_level", "VERBOSE"));
+        assert_eq!(c.valid_error("log_level"), "Invalid log_level: VERBOSE");
+    }
+
+    #[test]
     fn string_valid_log_level_and_graph_symbols() {
         // Set-membership arms (src/btop_config.cpp:600-608).
         let mut c = sample();

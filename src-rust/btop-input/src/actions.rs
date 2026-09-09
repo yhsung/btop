@@ -85,8 +85,8 @@ const SIG_TERM: i32 = 15;
 const SIG_KILL: i32 = 9;
 
 /// Every mutation/side effect process() triggers, as data. P3 sink executes.
-/// Step-5 audit (against :214-641): every variant below is constructed by at
-/// least one process_key arm — Quit/ReloadConfig/ShowMenu/ToggleBox/
+/// Step-5 audit (against :214-641): every variant below Quit..ZeroNetOffsets
+/// is constructed by at least one process_key arm — Quit/ReloadConfig/ShowMenu/ToggleBox/
 /// CyclePreset (global), SetProcFilter/CommitFilter/CancelFilter/FlushConfig/
 /// SortPrev/SortNext/ToggleTree/CollapseAll/TogglePause/FollowSelected/
 /// FollowDetailed/Unfollow/ToggleReversed/TogglePerCore/ToggleMemBytes/
@@ -96,6 +96,9 @@ const SIG_KILL: i32 = 9;
 /// CycleIface/ToggleNetSync/ToggleNetAuto/ZeroNetOffsets (net), Run
 /// (everywhere). OpenFilterEditor was deleted: the f/ arm mutates the editor
 /// directly and emits no intent (nothing left for the sink to intend).
+/// The menu tail (ApplyTheme..SetMouseEnabled) is constructed by the
+/// btop-menu options commit/flip/cycle paths (P2 Task 4), never by
+/// process_key — see each variant's contract.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Quit,
@@ -232,6 +235,58 @@ pub enum Action {
     /// of Net::current_net[selected_iface] (:623-632). Offset math is a sink
     /// duty. Run{net,no_update=false} — like RecalcLayout, a data re-seed.
     ZeroNetOffsets,
+    /// Sink: Theme::setTheme() + Draw::banner_gen refresh + redraw
+    /// (src/btop_menu.cpp:1720-1726). The P3 sink contract INCLUDES the
+    /// Config write that selected the theme (color_theme set, lowcolor flip
+    /// on the truecolor path, tty_mode set on the force_tty path). Emitted
+    /// with the CURRENT theme name when a bool flip only refreshes the
+    /// active theme (truecolor :1501-1503, force_tty :1506-1511,
+    /// rounded_corners / theme_background :1513-1514), and with the NEW
+    /// theme name when the color_theme cycle picks one (:1564). Constructed
+    /// by the btop-menu options flip/cycle paths (P2 Task 4), not by
+    /// process_key.
+    ApplyTheme {
+        name: String,
+    },
+    /// Sink: Config::write() with write_new forced true around the call
+    /// (:1521-1525: save_config_on_exit flipped True→False triggers an
+    /// immediate save). Constructed by the btop-menu options flip path.
+    WriteConfig,
+    /// Sink: Runner::pause_output=paused (:1515-1516: background_update flip
+    /// sets it false unconditionally). Constructed by the btop-menu
+    /// options flip path.
+    PauseOutput {
+        paused: bool,
+    },
+    /// Sink: Logger::set_log_level(level) + info log (:1569-1571). The P3
+    /// sink contract INCLUDES the log_level Config write. Constructed by
+    /// the btop-menu options cycle path.
+    SetLogLevel {
+        level: String,
+    },
+    /// Sink: Cpu::core_mapping = Cpu::get_core_mapping() after
+    /// atomic_wait(Runner::active) (:1402: cpu_core_map edit commit). The
+    /// wait is a sink duty. Constructed by the btop-menu options commit path.
+    RefreshCoreMapping,
+    /// Sink: Config::current_preset.reset() after atomic_wait(Runner::active)
+    /// (:1391-1394: shown_boxes/presets edit commit; :1578-1580:
+    /// disable_presets cycle to anything but "Off"). The wait is a sink
+    /// duty. Constructed by the btop-menu options commit/cycle paths.
+    ResetPreset,
+    /// Sink: Draw::update_clock(true) (:1397: clock_format edit commit
+    /// forces the clock redraw before the accompanying RecalcLayout).
+    /// EXTRA carrier beyond the Task 4 list — without it the forced clock
+    /// redraw would be silently dropped. Constructed by the btop-menu
+    /// options commit path.
+    UpdateClock,
+    /// Sink: print Term::mouse_on when enabled, Term::mouse_off otherwise
+    /// (:1527-1529: disable_mouse flip; enabled = !new disable_mouse value).
+    /// EXTRA carrier beyond the Task 4 list — without it the terminal mouse
+    /// mode switch would be silently dropped. Constructed by the btop-menu
+    /// options flip path.
+    SetMouseEnabled {
+        enabled: bool,
+    },
 }
 pub trait ActionSink {
     fn emit(&mut self, action: Action);
@@ -993,6 +1048,28 @@ mod tests {
             redraw: true,
         });
         assert_eq!(r.actions.len(), 2);
+    }
+
+    #[test]
+    fn menu_option_actions_constructible() {
+        // P2 Task 4 Step 1: every optionsMenu side effect has a carrier.
+        // Each variant is constructed here at minimum; the btop-menu
+        // options commit/flip paths construct them for real.
+        let actions = vec![
+            Action::ApplyTheme {
+                name: "Default".to_string(),
+            },
+            Action::WriteConfig,
+            Action::PauseOutput { paused: false },
+            Action::SetLogLevel {
+                level: "DEBUG".to_string(),
+            },
+            Action::RefreshCoreMapping,
+            Action::ResetPreset,
+            Action::UpdateClock,
+            Action::SetMouseEnabled { enabled: true },
+        ];
+        assert_eq!(actions.len(), 8);
     }
 
     fn proced(key: &str) -> Vec<Action> {
