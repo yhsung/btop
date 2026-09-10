@@ -89,6 +89,15 @@ pub struct World {
     /// only refreshes what was already on screen).
     pub on_dev_tty: bool,
     pub terminal_sync: bool,
+    /// Tick-owned scheduling clock (`Runner::future_time`, cpp:1106/1155).
+    /// First tick initialises from `now_ms + update_ms`; subsequent ticks
+    /// advance by `update_ms`. Read by the tick schedule gate; written by
+    /// `tick()`.
+    pub next_tick_ms: u64,
+    /// Cached "No boxes shown!" hint (cpp:666-690). Pinned once per runner
+    /// session, re-emitted whenever the tick output is empty and not
+    /// paused. The C++ gate is `if (empty_bg.empty()) …`; we mirror that.
+    pub empty_bg: String,
 }
 
 impl Default for World {
@@ -291,6 +300,8 @@ impl Default for World {
             gpu_count: 0,
             on_dev_tty: false,
             terminal_sync: false,
+            next_tick_ms: 0,
+            empty_bg: String::new(),
         }
     }
 }

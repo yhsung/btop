@@ -761,10 +761,22 @@ fn render_detail_values(
     if item_fit >= 8 {
         out += &cjust(&detail.entry.p_nice.to_string(), iw, false, true);
     }
-    // :2019-2027 memory line.
+    // :2019-2027 memory line. DEVIATION from a clean Rust port: when
+    // `total_mem == 0`, the C++ btop_draw.cpp:2026 divides by zero and
+    // `fmt::format("{:.2f}", inf)` → "inf", then `mem_str.resize(4)` pads
+    // with a NUL byte. The harness fixture captures this NUL faithfully
+    // (it lives between "M:" and "%" in the memory line). To match
+    // byte-for-byte, the Rust port reproduces the divide-by-zero path
+    // (f64 → "inf"/"nan") and pads with NUL on truncation. Real-world
+    // btop never hits this path (total_mem is always nonzero after
+    // `Shared::init`), so the deviation is fixture-only.
     let mem_back = detail.mem_history.last().copied().unwrap_or(0) as u64;
     let mem_p = if total_mem == 0 {
-        0.0
+        if mem_back == 0 {
+            0.0
+        } else {
+            f64::INFINITY
+        }
     } else {
         (mem_back as f64 * 100.0 / total_mem as f64).clamp(0.0, 100.0)
     };
@@ -772,6 +784,12 @@ fn render_detail_values(
     mem_s.truncate(4);
     if mem_s.ends_with('.') {
         mem_s.pop();
+    }
+    // Pad to 4 bytes with NUL (matches C++ `string::resize(4)` on a 3-byte
+    // "inf" / "nan"). The NUL is what produces the embedded 0 in the
+    // fixture at the "M:inf\0%" position.
+    while mem_s.len() < 4 {
+        mem_s.push('\0');
     }
     let mem_graph = Graph::new(
         GraphOpts {

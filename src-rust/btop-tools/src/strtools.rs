@@ -126,6 +126,16 @@ pub fn isint(s: &str) -> bool {
 /// Mirrors Tools::uresize (src/btop_tools.cpp:269): the wide path keeps the
 /// longest prefix whose column width (via [`wide_ulen`]) fits, matching the
 /// C++ pop-back loop; the narrow path keeps the first `len` scalars.
+///
+/// DEVIATION from a clean Rust port: the C++ wide path runs through
+/// `wcstombs` after a resize-to-wchar-count step, which embeds a trailing
+/// NUL byte in the output (cpp:284-285: `n_str.resize(w_str.size())` then
+/// `wcstombs(dest, src, w_str.size())` — the latter writes up to `n` mb
+/// chars INCLUDING the terminator when the source carries one). The
+/// harness `emit()` uses `fwrite` and faithfully captures those NULs in
+/// `proc_detail.ans`. The Rust port appends a NUL on the wide path to
+/// match the fixture byte-for-byte. This is documented as a known
+/// C++-quirk mirroring; P4 is not expected to consume the NUL.
 pub fn uresize(s: &str, len: usize, wide: bool) -> String {
     if len < 1 || s.is_empty() {
         return String::new();
@@ -140,7 +150,10 @@ pub fn uresize(s: &str, len: usize, wide: bool) -> String {
             }
             end = i + ch.len_utf8();
         }
-        return s[..end].to_string();
+        let mut out = String::with_capacity(end + 1);
+        out.push_str(&s[..end]);
+        out.push('\0');
+        return out;
     }
     s.chars().take(len).collect()
 }
@@ -149,7 +162,9 @@ pub fn uresize(s: &str, len: usize, wide: bool) -> String {
 /// Mirrors Tools::luresize (src/btop_tools.cpp:302). NOTE: the C++ wide path
 /// uses a `byte > 0xEF` heuristic (counts 3-byte seqs as 2); this port uses
 /// exact [`wide_ulen`] columns instead, which agrees on CJK but is also
-/// correct for other double-width chars.
+/// correct for other double-width chars. Unlike [`uresize`], the C++ wide
+/// path of `luresize` does NOT pass through wcstombs, so no trailing NUL
+/// is appended here.
 pub fn luresize(s: &str, len: usize, wide: bool) -> String {
     if len < 1 || s.is_empty() {
         return String::new();
@@ -505,10 +520,10 @@ mod tests {
         assert_eq!(wide_ulen("a中b"), 4); // CJK counts 2
         assert_eq!(wide_ulen(""), 0);
         assert_eq!(uresize("abcdef", 4, false), "abcd");
-        assert_eq!(uresize("a中bcd", 3, true), "a中"); // 1+2=3, b would be 4
-        assert_eq!(uresize("a中bcd", 4, true), "a中b");
+        assert_eq!(uresize("a中bcd", 3, true), "a中\0"); // 1+2=3, b would be 4 (C++ NUL via wcstombs)
+        assert_eq!(uresize("a中bcd", 4, true), "a中b\0");
         assert_eq!(luresize("abcdef", 4, false), "cdef");
-        assert_eq!(luresize("ab中c", 3, true), "中c"); // 2+1=3
+        assert_eq!(luresize("ab中c", 3, true), "中c"); // 2+1=3, no wcstombs in C++ luresize
         assert_eq!(luresize("ab", 5, false), "ab");
     }
 
@@ -526,8 +541,10 @@ mod tests {
         assert_eq!(cjust("a中", 6, true, false), "  a中 ");
         // Narrow counts scalars (2), so padding differs.
         assert_eq!(cjust("a中", 6, false, false), "  a中  ");
-        // Overlong wide input truncates by columns.
-        assert_eq!(cjust("a中bcd", 3, true, true), "a中");
+        // Overlong wide input truncates by columns. The wide uresize path
+        // appends a trailing NUL (C++ wcstombs quirk — see uresize docs);
+        // the C++ fixture captures it, so we mirror here.
+        assert_eq!(cjust("a中bcd", 3, true, true), "a中\0");
     }
 
     #[test]
