@@ -126,12 +126,15 @@ pub const EPERM: i32 = 1;
 
 /// Caller-supplied context per `process` call. `target_pid` is the P3-resolved
 /// kill/renice pid (C++ `s_pid`: `show_detailed && selected_pid == 0 ?
-/// detailed_pid : selected_pid`, `:1008`); the process NAME shown in headers
-/// is render-only and intentionally absent (Task 6 resolves it for bytes).
+/// detailed_pid : selected_pid`, `:1008`); `target_name` is the matching
+/// process name for menu headers (C++ `selected_name` / detailed entry
+/// name, `:1148`). Signal menus stash both on `show` (mirroring the
+/// `s_pid` static) so later navigation keys keep the target.
 pub struct MenuCtx {
     pub term_w: usize,
     pub term_h: usize,
     pub target_pid: u64,
+    pub target_name: String,
 }
 
 /// Owned menu system: mask + current + C++ globals/statics.
@@ -159,6 +162,12 @@ pub struct MenuSystem {
     /// `selected_nice` (`:1800`) + `nice_edit` (`:1801`).
     pub renice_nice: i32,
     pub renice_edit: String,
+    /// Stashed signal target (C++ `s_pid` static, `:1140-1144`): set on
+    /// `show` for the signal family, reused by navigation keys.
+    pub signal_pid: u64,
+    /// Process name for signal headers (`selected_name` / detailed entry
+    /// name, `:1148`).
+    pub signal_pname: String,
     /// C++ `signalKillRet`: errno stored on the synchronous `pid < 1` path
     /// for [`signal_return_text`]; the sink overwrites it on async failures.
     pub kill_errno: i32,
@@ -197,6 +206,8 @@ impl MenuSystem {
     }
 
     /// `show(menu, signal)` (`:1958-1962`): set bit + signal, `process("")`.
+    /// Signal-family menus stash the target (`s_pid` static, `:1140-1144`)
+    /// for navigation keys and rendering.
     pub fn show(
         &mut self,
         menu: Menus,
@@ -208,6 +219,13 @@ impl MenuSystem {
     ) -> Vec<Action> {
         self.mask |= menu.bit();
         self.signal_to_send = signal;
+        if matches!(
+            menu,
+            Menus::SignalChoose | Menus::SignalSend | Menus::Renice
+        ) {
+            self.signal_pid = ctx.target_pid;
+            self.signal_pname = ctx.target_name.clone();
+        }
         self.process("", ctx, store, cfg, lists)
     }
 
@@ -306,12 +324,12 @@ impl MenuSystem {
         }
         match menu {
             Menus::SizeError => self.menu_size_error(key),
-            Menus::SignalChoose => self.menu_signal_choose(key, ctx.target_pid),
-            Menus::SignalSend => self.menu_signal_send(key, ctx.target_pid),
+            Menus::SignalChoose => self.menu_signal_choose(key, self.signal_pid),
+            Menus::SignalSend => self.menu_signal_send(key, self.signal_pid),
             Menus::SignalReturn => self.menu_signal_return(key),
             Menus::Options => self.menu_options(key, ctx, store, cfg, lists),
             Menus::Help => self.menu_help(key, ctx.term_h),
-            Menus::Renice => self.menu_renice(key, ctx.target_pid),
+            Menus::Renice => self.menu_renice(key, self.signal_pid),
             Menus::Main => self.menu_main(key),
         }
     }
@@ -864,6 +882,10 @@ impl MenuSystem {
             self.options.page,
             self.options.selected,
             self.help_page,
+            self.signal_pid,
+            &self.signal_pname,
+            self.signal_to_send,
+            i32::from(self.msg_box.selected),
             store,
             lists,
             theme,
@@ -924,6 +946,7 @@ mod tests {
             term_w: 100,
             term_h: 30,
             target_pid: 1234,
+            target_name: String::new(),
         }
     }
 
@@ -1028,6 +1051,43 @@ mod tests {
     }
 
     #[test]
+    fn signal_send_renders_confirmation_with_pid() {
+        // `signalSend` redraw block (:1146-1158): confirmation box naming
+        // the signal and target pid; button zones ride along for mouse.
+        use crate::overlay::OverlayTheme;
+        let mut sys = MenuSystem::default();
+        let mut s = store();
+        let mut cfg = Config::new();
+        let l = lists();
+        let c = MenuCtx {
+            term_w: 120,
+            term_h: 40,
+            target_pid: 74310,
+            target_name: "opencode".to_string(),
+        };
+        let _ = open(&mut sys, Menus::SignalSend, 15, &c, &mut s, &mut cfg, &l);
+        assert!(sys.active);
+        assert_eq!(sys.signal_pid, 74310);
+        sys.render_overlay(&s, &l, &btop_config::theme::default_theme(), 120, 40);
+        assert!(
+            sys.overlay.contains("Send signal:"),
+            "{}",
+            &sys.overlay[..200.min(sys.overlay.len())]
+        );
+        assert!(sys.overlay.contains("74310"), "pid in body");
+        assert!(sys.overlay.contains("opencode"), "name in body");
+        assert!(sys.overlay.contains("SIGTERM"), "signal name");
+        assert!(
+            sys.mouse_maps.iter().any(|m| m.action == "button1"),
+            "Yes button clickable"
+        );
+        assert!(
+            sys.mouse_maps.iter().any(|m| m.action == "button2"),
+            "No button clickable"
+        );
+    }
+
+    #[test]
     fn show_activates_and_first_draw_runs_all() {
         let mut sys = MenuSystem::default();
         let c = ctx();
@@ -1056,6 +1116,7 @@ mod tests {
             term_w: 70,
             term_h: 30,
             target_pid: 1,
+            target_name: String::new(),
         };
         open(&mut sys, Menus::Main, -1, &small, &mut s, &mut cfg, &l);
         assert_eq!(sys.current, Some(Menus::SizeError));
@@ -1073,6 +1134,7 @@ mod tests {
             term_w: 40,
             term_h: 30,
             target_pid: 1,
+            target_name: String::new(),
         };
         open(&mut sys, Menus::Renice, -1, &tiny, &mut s, &mut cfg, &l);
         assert_eq!(sys.current, Some(Menus::SizeError));
@@ -1089,6 +1151,7 @@ mod tests {
             term_w: 80,
             term_h: 24,
             target_pid: 1,
+            target_name: String::new(),
         };
         open(&mut sys, Menus::Main, -1, &edge, &mut s, &mut cfg, &l);
         assert_eq!(sys.current, Some(Menus::Main));
@@ -1097,6 +1160,7 @@ mod tests {
             term_w: 50,
             term_h: 20,
             target_pid: 1,
+            target_name: String::new(),
         };
         open(&mut sys2, Menus::Renice, -1, &edge2, &mut s, &mut cfg, &l);
         assert_eq!(sys2.current, Some(Menus::Renice));
@@ -1231,6 +1295,7 @@ mod tests {
             term_w: 100,
             term_h: 30,
             target_pid: 0,
+            target_name: String::new(),
         };
         open(
             &mut sys,
@@ -1546,6 +1611,7 @@ mod tests {
             term_w: 100,
             term_h: 30,
             target_pid: 0,
+            target_name: String::new(),
         };
         open(&mut sys, Menus::Renice, -1, &dead, &mut s, &mut cfg, &l);
         let acts = proc(&mut sys, "enter", &dead, &mut s, &mut cfg, &l);

@@ -44,7 +44,7 @@ use btop_input::actions::{Action, MenuKind, RunTarget, ScrollKey};
 #[cfg_attr(not(test), allow(unused_imports))]
 use btop_menu::menus::{signal_return_text, MenuCtx, MenuSystem, Menus};
 
-use crate::wiring::{AppState, SignalFlags};
+use crate::wiring::{visible_selected, AppState, SignalFlags};
 
 // ── World ──────────────────────────────────────────────────────────────────
 
@@ -692,10 +692,49 @@ pub fn execute_single(
             if matches!(menu, MenuKind::SignalReturn) {
                 w.menu.kill_errno = btop_menu::menus::ESRCH; // default; kill_path overrides
             }
+            // `s_pid` resolution (btop_menu.cpp:1142-1143): show_detailed
+            // with no selection → detailed pid, else the selected pid;
+            // the name rides along for menu headers (:1148).
+            let (target_pid, target_name) = match menu {
+                MenuKind::SignalChoose | MenuKind::SignalSend { .. } | MenuKind::Renice => {
+                    let show_detailed = w.config.get_b("show_detailed").unwrap_or(false);
+                    let selected = visible_selected(
+                        &w.state.proc_view,
+                        w.config.get_b("proc_tree").unwrap_or(false),
+                        w.state.proc_start,
+                        w.state.proc_selected,
+                    )
+                    .map(|(pid, _)| pid)
+                    .unwrap_or(0);
+                    let detailed = w.config.get_i("detailed_pid").unwrap_or(0).max(0) as u64;
+                    let pid = if show_detailed && selected == 0 {
+                        detailed
+                    } else {
+                        selected
+                    };
+                    let name = if pid != 0 && pid == detailed {
+                        w.state
+                            .detail
+                            .as_ref()
+                            .map(|d| d.entry.name.clone())
+                            .unwrap_or_default()
+                    } else {
+                        w.state
+                            .proc_view
+                            .iter()
+                            .find(|p| p.pid == pid)
+                            .map(|p| p.name.clone())
+                            .unwrap_or_default()
+                    };
+                    (pid, name)
+                }
+                _ => (0, String::new()),
+            };
             let ctx = MenuCtx {
                 term_w,
                 term_h,
-                target_pid: 0, // menus take pid via MenuCtx at P3 dispatch time
+                target_pid,
+                target_name,
             };
             let acts = w
                 .menu

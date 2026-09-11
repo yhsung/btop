@@ -79,6 +79,7 @@ fn ctx() -> MenuCtx {
         term_w: 100,
         term_h: 30,
         target_pid: 0,
+        target_name: String::new(),
     }
 }
 

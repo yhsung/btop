@@ -538,6 +538,7 @@ fn dispatch_menu(
         term_w,
         term_h,
         target_pid: 0,
+        target_name: String::new(),
     };
     // Disjoint-field borrows (`menu`/`store`/`config`/`lists`) in one
     // expression — the borrow checker accepts these as separate fields.

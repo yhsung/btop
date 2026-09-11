@@ -37,7 +37,7 @@ use btop_tools::strtools::{cjust, s_replace, uresize};
 
 use crate::msgbox::BoxKind;
 use crate::options::{display_value, OptionsStore};
-use crate::tables::{CATEGORIES, HELP_TEXT, MENU_BANNERS};
+use crate::tables::{CATEGORIES, HELP_TEXT, MENU_BANNERS, P_SIGNALS};
 
 /// `Fx::bl`/`Fx::ubl` (blink on/off, btop_tools.cpp:743-744) are used by the
 /// signal/renice cursor (`Fx::bl + "█" + Fx::ubl`), out of golden scope.
@@ -676,10 +676,63 @@ pub fn help_overlay(
     (out, Vec::new())
 }
 
+/// `signalSend` confirmation box (btop_menu.cpp:1146-1158): `MsgBox{50,
+/// 1, content, "signal"}`. Content lines carry their colors inline (as in
+/// C++); the title names the signal except for 0/1/17/out-of-range.
+/// `msg_selected`: 0 = Yes focused, 1 = No.
+pub fn signal_send_overlay(
+    pid: u64,
+    pname: &str,
+    signum: i32,
+    msg_selected: i32,
+    ot: &OverlayTheme,
+    term_w: i64,
+    term_h: i64,
+) -> (String, Vec<MouseMap>) {
+    // C++ indexes `P_Signals` 1-based and guards `> 1 && <= 32 && != 17`
+    // for the title (the `<= 32` end is an upstream landmine on a
+    // 32-entry table — the port clamps to the valid range).
+    let named = (signum > 1 && signum != 17)
+        .then(|| P_SIGNALS.get(signum as usize).copied())
+        .flatten();
+    let sig_name = named.unwrap_or("signal");
+    // `hi_fg + N + (valid ? main_fg + " (NAME)" : "")` (:1150-1151).
+    let sig_num = if (1..=31).contains(&signum) {
+        format!("{signum}{} ({})", ot.main_fg, P_SIGNALS[signum as usize])
+    } else {
+        signum.to_string()
+    };
+    let content = vec![
+        format!(
+            "{FX_B}{}Send signal: {FX_UB}{}{sig_num}",
+            ot.main_fg, ot.hi_fg
+        ),
+        format!(
+            "{FX_B}{}To PID: {FX_UB}{}{pid}{} ({}){}",
+            ot.main_fg,
+            ot.hi_fg,
+            ot.main_fg,
+            uresize(pname, 16, false),
+            ot.reset,
+        ),
+    ];
+    msgbox_overlay(
+        50,
+        1,
+        &content,
+        sig_name,
+        msg_selected,
+        ot,
+        false,
+        false,
+        term_w,
+        term_h,
+    )
+}
+
 /// Rebuild [`crate::menus::MenuSystem::overlay`] + `mouse_maps` for the
-/// currently active menu. Call after `show`/`process` drove the LOGIC;
-/// mirrors the C++ draw-on-`Changed` arms. `SizeError`/`Signal*` menus
-/// render nothing here (out of golden scope — P3 adds them if needed).
+/// `SignalReturn`/`Renice` menus render nothing here (out of golden scope
+/// — P3 adds them if needed); `SignalSend` renders its confirmation box.
 #[allow(clippy::too_many_arguments)]
 pub fn render_into(
     current: crate::menus::Menus,
@@ -688,6 +741,10 @@ pub fn render_into(
     page: usize,
     selected: usize,
     help_page: usize,
+    signal_pid: u64,
+    signal_pname: &str,
+    signal_to_send: i32,
+    msg_selected: i32,
     store: &OptionsStore,
     lists: &HashMap<String, Vec<String>>,
     theme: &HashMap<String, String>,
@@ -701,6 +758,15 @@ pub fn render_into(
             tab, page, selected, store, lists, term_w, term_h, &ot, false, false, false, "", None,
         ),
         crate::menus::Menus::Help => help_overlay(help_page, term_h, term_w, &ot, false, false),
+        crate::menus::Menus::SignalSend => signal_send_overlay(
+            signal_pid,
+            signal_pname,
+            signal_to_send,
+            msg_selected,
+            &ot,
+            term_w,
+            term_h,
+        ),
         _ => (String::new(), Vec::new()),
     }
 }
