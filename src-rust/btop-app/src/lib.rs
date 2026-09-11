@@ -19,8 +19,10 @@ pub mod signals;
 /// (presetsValid + apply_preset).
 pub mod boot;
 
-/// Cached box-label strings (T5). Placeholder.
-pub mod box_labels {}
+/// Box labels, outline pre-print, and the terminal-too-small loop (T6).
+/// C++ truth: src/btop_draw.cpp:2363/2413/2487/2524/2548 (outline titles),
+/// src/btop.cpp:1093-1097 (outline print), :154-209 (min-size loop).
+pub mod box_labels;
 
 /// clean_quit(sig) sequence matching cpp:211-261 (T6). Placeholder.
 pub mod clean_quit {}

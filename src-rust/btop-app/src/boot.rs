@@ -13,10 +13,12 @@
 //!   (canonical Rust port: `btop_runner::sink::apply_preset`, called here —
 //!   not duplicated).
 //!
-//! `calc_sizes` outlines + `update_ms`/`future_time` (btop.cpp:1099-1106) are
-//! T6/T7 territory (geometry + main-loop clock); this module stops at the
-//! preset. `Logger::init` (btop.cpp:871-874) has no Rust logger port yet, so
-//! load/setup warnings are returned to the caller (T7 routes them).
+//! `calc_sizes` geometry (btop.cpp:1092) is T7 territory; the outline
+//! pre-print (btop.cpp:1093-1097) lives in [`crate::box_labels`] and the
+//! `update_ms`/`future_time` seed (btop.cpp:1099-1106) in
+//! [`init_tick_clock`] below. `Logger::init` (btop.cpp:871-874) has no Rust
+//! logger port yet, so load/setup warnings are returned to the caller
+//! (T7 routes them).
 
 use std::path::{Path, PathBuf};
 
@@ -495,4 +497,31 @@ pub fn apply_preset_default(w: &mut World, preset: Option<u32>) -> bool {
         w.current_preset = Some(idx);
     }
     outcome.ok
+}
+
+// ── init_tick_clock ─────────────────────────────────────────────────────────
+
+/// Main-loop clock seed (src/btop.cpp:1099-1106, T5-deferred to T6).
+///
+/// Mirrors `:1103` (`cli.updates` → `Config::set("update_ms", …)`), `:1105`
+/// (`update_ms = Config::getI("update_ms")`), and `:1106`
+/// (`future_time = time_ms()`), writing `future_time` into
+/// `World::next_tick_ms` (the `Runner::future_time` field the tick schedule
+/// gate reads; `tick()` advances it by `update_ms` per `:1155`).
+///
+/// `now_ms` is a parameter (T7 passes the live clock; tests pin it) so the
+/// function stays headless. Returns `(update_ms, future_time)`.
+///
+/// DEVIATION (hardening): C++ converts the `int` straight into `uint64_t`
+/// (a negative `update_ms` would wrap huge); here negatives clamp to `0`
+/// instead of wrapping.
+pub fn init_tick_clock(w: &mut World, cli_updates: Option<u32>, now_ms: u64) -> (u64, u64) {
+    // btop.cpp:1103 — the CLI value is already floored at 100 by the arg
+    // parser (`btop_config::cli`, `-u` handling).
+    if let Some(u) = cli_updates {
+        let _ = w.config.set_i("update_ms", i64::from(u));
+    }
+    let update_ms = w.config.get_i("update_ms").unwrap_or(2000).max(0) as u64;
+    w.next_tick_ms = now_ms;
+    (update_ms, now_ms)
 }

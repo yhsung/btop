@@ -136,6 +136,33 @@ impl Config {
         }
     }
 
+    /// Toggle a box name in `shown_boxes`. Transcribes `Config::toggle_box`
+    /// (src/btop_config.cpp:739-761): remove the name when present, append
+    /// it when absent, then `set("shown_boxes", joined)`.
+    ///
+    /// DEVIATION (structural): C++ mutates the `current_boxes` vector, then
+    /// reverts when `Term::width/height < get_min_size(new_boxes)` (:752-756)
+    /// and only then writes the string. This port has no `current_boxes`
+    /// vector (the string is the single source of truth) and no `Term`
+    /// access, so the size gate lives with the caller
+    /// (`btop_app::box_labels::min_size_loop` re-checks the terminal size
+    /// every iteration and simply keeps looping when the toggled layout
+    /// still does not fit). Always returns `true` (`set_s` targets the
+    /// known `shown_boxes` key; `false` only when the key was never seeded,
+    /// mirroring `set_s` semantics).
+    pub fn toggle_box(&mut self, name: &str) -> bool {
+        let cur = self.strings.get("shown_boxes").cloned().unwrap_or_default();
+        let mut boxes: Vec<&str> = cur.split_whitespace().collect();
+        match boxes.iter().position(|b| *b == name) {
+            Some(pos) => {
+                boxes.remove(pos);
+            }
+            None => boxes.push(name),
+        }
+        let new_boxes = boxes.join(" ");
+        self.set_s("shown_boxes", new_boxes)
+    }
+
     pub fn lock(&mut self) {
         self.locked = true;
     }
@@ -444,6 +471,17 @@ mod tests {
         let mut c = sample();
         c.flip("theme_background");
         assert_eq!(c.get_b("theme_background"), Some(false));
+    }
+
+    #[test]
+    fn toggle_box_removes_then_reappends() {
+        let mut c = sample();
+        c.strings
+            .insert("shown_boxes".into(), "cpu mem net proc".into());
+        assert!(c.toggle_box("mem"));
+        assert_eq!(c.get_s("shown_boxes"), Some("cpu net proc"));
+        assert!(c.toggle_box("mem"));
+        assert_eq!(c.get_s("shown_boxes"), Some("cpu net proc mem"));
     }
 
     #[test]
