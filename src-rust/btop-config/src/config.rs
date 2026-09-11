@@ -27,6 +27,25 @@ enum Stoi {
     OutOfRange,
 }
 
+/// CLI numeric parsing for `-p`/`-u` (src/btop_cli.cpp:145, :183):
+/// C++ `std::stoi` throws `invalid_argument` (no digits) vs
+/// `out_of_range` (magnitude exceeds `int`), and each maps to a distinct
+/// error line. `Ok` carries the value; `Err(true)` = invalid,
+/// `Err(false)` = out of range.
+pub fn stoi_for_cli(value: &str) -> Result<i32, bool> {
+    match parse_stoi(value) {
+        Stoi::Ok(v) => {
+            if v < i32::MIN as i64 || v > i32::MAX as i64 {
+                Err(false)
+            } else {
+                Ok(v as i32)
+            }
+        }
+        Stoi::Invalid => Err(true),
+        Stoi::OutOfRange => Err(false),
+    }
+}
+
 /// C++ `stoi` semantics relied on by `intValid` (src/btop_config.cpp:559-575):
 /// skip leading whitespace, accept an optional sign, parse the digit run
 /// (trailing garbage ignored); no digits → `invalid_argument`, overflow of
@@ -61,6 +80,102 @@ fn parse_stoi(value: &str) -> Stoi {
     }
 }
 
+/// Dump order for `Config::dump`, mirroring the C++ `descriptions` table
+/// iteration in `current_config` (src/btop_config.cpp:877-899) on a
+/// GPU-enabled non-Linux build — verified key-for-key against
+/// `btop --default-config` output (87 keys; description comments are not
+/// ported). Runtime-only map keys are absent here on purpose (C++
+/// iterates `descriptions`, not the maps).
+const DEFAULT_ORDER: &[&str] = &[
+    "color_theme",
+    "theme_background",
+    "truecolor",
+    "force_tty",
+    "disable_presets",
+    "presets",
+    "vim_keys",
+    "disable_mouse",
+    "rounded_corners",
+    "terminal_sync",
+    "graph_symbol",
+    "graph_symbol_cpu",
+    "graph_symbol_gpu",
+    "graph_symbol_mem",
+    "graph_symbol_net",
+    "graph_symbol_proc",
+    "shown_boxes",
+    "update_ms",
+    "proc_sorting",
+    "proc_reversed",
+    "proc_tree",
+    "proc_colors",
+    "proc_gradient",
+    "proc_per_core",
+    "proc_mem_bytes",
+    "proc_cpu_graphs",
+    "proc_info_smaps",
+    "proc_left",
+    "proc_filter_kernel",
+    "proc_follow_detailed",
+    "proc_aggregate",
+    "keep_dead_proc_usage",
+    "cpu_graph_upper",
+    "cpu_graph_lower",
+    "show_gpu_info",
+    "cpu_invert_lower",
+    "cpu_single_graph",
+    "cpu_bottom",
+    "show_uptime",
+    "show_cpu_watts",
+    "check_temp",
+    "cpu_sensor",
+    "show_coretemp",
+    "cpu_core_map",
+    "temp_scale",
+    "base_10_sizes",
+    "show_cpu_freq",
+    "clock_format",
+    "background_update",
+    "custom_cpu_name",
+    "disks_filter",
+    "mem_graphs",
+    "mem_below_net",
+    "zfs_arc_cached",
+    "show_swap",
+    "swap_disk",
+    "show_disks",
+    "only_physical",
+    "use_fstab",
+    "zfs_hide_datasets",
+    "disk_free_priv",
+    "show_io_stat",
+    "io_mode",
+    "io_graph_combined",
+    "io_graph_speeds",
+    "swap_upload_download",
+    "net_download",
+    "net_upload",
+    "net_auto",
+    "net_sync",
+    "net_iface",
+    "base_10_bitrate",
+    "show_battery",
+    "selected_battery",
+    "show_battery_watts",
+    "log_level",
+    "save_config_on_exit",
+    "nvml_measure_pcie_speeds",
+    "rsmi_measure_pcie_speeds",
+    "gpu_mirror_graph",
+    "shown_gpus",
+    "custom_gpu_name0",
+    "custom_gpu_name1",
+    "custom_gpu_name2",
+    "custom_gpu_name3",
+    "custom_gpu_name4",
+    "custom_gpu_name5",
+];
+
 #[derive(Debug, Default)]
 pub struct Config {
     pub strings: HashMap<String, String>,
@@ -76,6 +191,183 @@ pub struct Config {
 impl Config {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Default-valued config, mirroring `Config::current_config`
+    /// (src/btop_config.cpp:877-899): the map set `--default-config`
+    /// dumps. Moved here from `World::default` so the CLI printer and the
+    /// runner share one source of truth.
+    ///
+    /// Seeded defaults mirror `btop --default-config` (verified): every
+    /// `true` below matches upstream; the rest are false upstream too,
+    /// except runtime-only keys (proc_filtering, pause_proc_list,
+    /// follow_process, should_selection_return_to_followed,
+    /// proc_banner_shown, show_detailed, dragging_scroll, mem_bytes,
+    /// cpu_temp_only, tty_mode/force_tty/lowcolor state) which stay
+    /// false by design.
+    pub fn defaults() -> Self {
+        let mut config = Self::default();
+        config.bools.insert("theme_background".into(), true);
+        config.bools.insert("vim_keys".into(), false);
+        config.bools.insert("proc_filtering".into(), false);
+        config.bools.insert("proc_tree".into(), false);
+        config.bools.insert("pause_proc_list".into(), false);
+        config.bools.insert("follow_process".into(), false);
+        config
+            .bools
+            .insert("should_selection_return_to_followed".into(), false);
+        config.bools.insert("proc_reversed".into(), false);
+        config.bools.insert("proc_follow_detailed".into(), true);
+        config.bools.insert("proc_aggregate".into(), false);
+        config.bools.insert("proc_info_smaps".into(), false);
+        config.bools.insert("proc_left".into(), false);
+        config.bools.insert("proc_filter_kernel".into(), false);
+        config.bools.insert("keep_dead_proc_usage".into(), false);
+        config.bools.insert("update_following".into(), false);
+        config.bools.insert("terminal_sync".into(), true);
+        config.bools.insert("mem_below_net".into(), false);
+        config.bools.insert("zfs_arc_cached".into(), true);
+        config.bools.insert("only_physical".into(), true);
+        config.bools.insert("use_fstab".into(), true);
+        config.bools.insert("zfs_hide_datasets".into(), false);
+        config.bools.insert("disk_free_priv".into(), false);
+        config.bools.insert("nvml_measure_pcie_speeds".into(), true);
+        config.bools.insert("rsmi_measure_pcie_speeds".into(), true);
+        config.bools.insert("proc_per_core".into(), false);
+        config.bools.insert("proc_mem_bytes".into(), true);
+        config.bools.insert("mem_bytes".into(), false);
+        config.bools.insert("show_detailed".into(), false);
+        config.bools.insert("proc_banner_shown".into(), false);
+        config.bools.insert("show_swap".into(), true);
+        config.bools.insert("swap_disk".into(), true);
+        config.bools.insert("show_disks".into(), true);
+        config.bools.insert("show_io_stat".into(), true);
+        config.bools.insert("io_mode".into(), false);
+        config.bools.insert("io_graph_combined".into(), false);
+        config.bools.insert("mem_graphs".into(), true);
+        config.bools.insert("net_sync".into(), true);
+        config.bools.insert("net_auto".into(), true);
+        config.bools.insert("dragging_scroll".into(), false);
+        config.bools.insert("swap_upload_download".into(), false);
+        config.bools.insert("tty_mode".into(), false);
+        config.bools.insert("force_tty".into(), false);
+        config.bools.insert("truecolor".into(), true);
+        config.bools.insert("lowcolor".into(), false);
+        config.bools.insert("rounded_corners".into(), true);
+        config.bools.insert("save_config_on_exit".into(), true);
+        config.bools.insert("disable_mouse".into(), false);
+        config.bools.insert("background_update".into(), true);
+        config.bools.insert("base_10_sizes".into(), false);
+        config.bools.insert("check_temp".into(), true);
+        config.bools.insert("cpu_temp_only".into(), false);
+        config.bools.insert("show_coretemp".into(), true);
+        config.bools.insert("cpu_single_graph".into(), false);
+        config.bools.insert("cpu_invert_lower".into(), true);
+        config.bools.insert("show_cpu_watts".into(), true);
+        config.bools.insert("show_cpu_freq".into(), true);
+        config.bools.insert("show_uptime".into(), true);
+        config.bools.insert("show_battery".into(), true);
+        config.bools.insert("show_battery_watts".into(), true);
+        config.bools.insert("cpu_bottom".into(), false);
+        config.bools.insert("gpu_mirror_graph".into(), true);
+        config.bools.insert("proc_colors".into(), true);
+        config.bools.insert("proc_gradient".into(), true);
+        config.bools.insert("proc_cpu_graphs".into(), true);
+        config.bools.insert("proc_per_core".into(), false);
+        config.bools.insert("vim_keys".into(), false);
+        config.ints.insert("update_ms".into(), 2000);
+        config.ints.insert("net_download".into(), 100);
+        config.ints.insert("net_upload".into(), 100);
+        config.ints.insert("proc_start".into(), 0);
+        config.ints.insert("proc_selected".into(), 0);
+        config.ints.insert("proc_last_selected".into(), 0);
+        config.ints.insert("proc_followed".into(), 0);
+        config.ints.insert("detailed_pid".into(), 0);
+        config.ints.insert("followed_pid".into(), 0);
+        config.ints.insert("proc_tree_auto_collapse".into(), 0);
+        config.ints.insert("proc_expand_pid".into(), 0);
+        config.ints.insert("proc_collapse_pid".into(), 0);
+        config.ints.insert("proc_toggle_children_pid".into(), 0);
+        config.ints.insert("proc_selected_pid".into(), 0);
+        config.ints.insert("restore_detailed_pid".into(), 0);
+        config.ints.insert("selected_pid".into(), 0);
+        config.ints.insert("selected_depth".into(), 0);
+        config
+            .strings
+            .insert("color_theme".into(), "Default".into());
+        config
+            .strings
+            .insert("proc_sorting".into(), "cpu lazy".into());
+        config.strings.insert("temp_scale".into(), "celsius".into());
+        config.strings.insert("log_level".into(), "WARNING".into());
+        // C++ default (verified via --default-config); without it the
+        // header clock is skipped as "empty format" (update_clock :335).
+        config.strings.insert("clock_format".into(), "%X".into());
+        config
+            .strings
+            .insert("graph_symbol".into(), "braille".into());
+        config
+            .strings
+            .insert("graph_symbol_cpu".into(), "default".into());
+        config
+            .strings
+            .insert("graph_symbol_mem".into(), "default".into());
+        config
+            .strings
+            .insert("graph_symbol_net".into(), "default".into());
+        config
+            .strings
+            .insert("graph_symbol_proc".into(), "default".into());
+        config
+            .strings
+            .insert("graph_symbol_gpu".into(), "default".into());
+        config
+            .strings
+            .insert("cpu_graph_upper".into(), "Auto".into());
+        config
+            .strings
+            .insert("cpu_graph_lower".into(), "Auto".into());
+        config
+            .strings
+            .insert("custom_cpu_name".into(), String::new());
+        config
+            .strings
+            .insert("shown_boxes".into(), "cpu mem net proc".into());
+        config
+            .strings
+            .insert("disable_presets".into(), "Off".into());
+        config.strings.insert(
+            "presets".into(),
+            "cpu:1:default,proc:0:default cpu:0:default,mem:0:default,net:0:default cpu:0:block,net:0:tty".into(),
+        );
+        config.strings.insert("proc_filter".into(), String::new());
+        // Loadable but undumped keys (in C++ maps, absent from the
+        // `descriptions` table, so `current_config` omits them).
+        config.strings.insert("proc_command".into(), String::new());
+        config.strings.insert("selected_name".into(), String::new());
+        config.strings.insert("cpu_sensor".into(), "Auto".into());
+        config
+            .strings
+            .insert("selected_battery".into(), "Auto".into());
+        config.strings.insert("cpu_core_map".into(), String::new());
+        config.strings.insert("disks_filter".into(), String::new());
+        config
+            .strings
+            .insert("io_graph_speeds".into(), String::new());
+        config.strings.insert("net_iface".into(), String::new());
+        config
+            .strings
+            .insert("base_10_bitrate".into(), "Auto".into());
+        config.strings.insert("show_gpu_info".into(), "Auto".into());
+        config
+            .strings
+            .insert("shown_gpus".into(), "nvidia amd intel apple".into());
+        for n in 0..6 {
+            config
+                .strings
+                .insert(format!("custom_gpu_name{n}"), String::new());
+        }
+        config
     }
 
     pub fn get_s(&self, name: &str) -> Option<&str> {
@@ -193,27 +485,33 @@ impl Config {
         if path.as_os_str().is_empty() {
             return Err("empty config path".to_string());
         }
+        std::fs::write(path, self.dump()).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Serialize the live maps to the `current_config` text shape
+    /// (src/btop_config.cpp:877-899): header plus one `name = value` line
+    /// per key. Shared by `write` and the `--default-config` printer.
+    ///
+    /// Key order and membership follow the C++ `descriptions` table on a
+    /// GPU-enabled non-Linux build (verified against `btop
+    /// --default-config` output): 87 keys, description comments omitted
+    /// (the port keeps no descriptions table — documented deviation).
+    /// Runtime-only keys present in the maps (`proc_selected`,
+    /// `detailed_pid`, `dragging_scroll`, …) are omitted exactly like
+    /// C++, which iterates `descriptions` rather than the maps.
+    pub fn dump(&self) -> String {
         let mut out = format!("#? Config file for btop v.{}\n", crate::VERSION);
-        let mut names: Vec<&str> = self
-            .strings
-            .keys()
-            .chain(self.ints.keys())
-            .chain(self.bools.keys())
-            .map(String::as_str)
-            .collect();
-        names.sort_unstable();
-        names.dedup();
-        for name in names {
+        for name in DEFAULT_ORDER {
             out.push('\n');
-            if let Some(v) = self.strings.get(name) {
+            if let Some(v) = self.strings.get(*name) {
                 out.push_str(&format!("{name} = \"{v}\"\n"));
-            } else if let Some(v) = self.ints.get(name) {
+            } else if let Some(v) = self.ints.get(*name) {
                 out.push_str(&format!("{name} = {v}\n"));
-            } else if let Some(v) = self.bools.get(name) {
+            } else if let Some(v) = self.bools.get(*name) {
                 out.push_str(&format!("{name} = {}\n", if *v { "true" } else { "false" }));
             }
         }
-        std::fs::write(path, out).map_err(|e| format!("{}: {e}", path.display()))
+        out
     }
 
     /// Unlock and flush staged tmp values into the live maps.

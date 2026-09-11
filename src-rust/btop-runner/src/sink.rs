@@ -143,130 +143,9 @@ pub struct World {
 
 impl Default for World {
     fn default() -> Self {
-        let mut config = Config::default();
-        // Seed minimal maps so the sink's `set_*` writes land (otherwise
-        // `Config::set_b` returns false on an unknown key and the test
-        // would silently drop the write). Real Config seeding is `init`
-        // work — out of scope (Task 4 / live).
-        // Seeded defaults mirror `btop --default-config` (verified): every
-        // `true` below matches upstream; the rest are false upstream too,
-        // except runtime-only keys (proc_filtering, pause_proc_list,
-        // follow_process, should_selection_return_to_followed,
-        // proc_banner_shown, show_detailed, dragging_scroll, mem_bytes,
-        // cpu_temp_only, tty_mode/force_tty/lowcolor state) which stay
-        // false by design.
-        config.bools.insert("theme_background".into(), true);
-        config.bools.insert("vim_keys".into(), false);
-        config.bools.insert("proc_filtering".into(), false);
-        config.bools.insert("proc_tree".into(), false);
-        config.bools.insert("pause_proc_list".into(), false);
-        config.bools.insert("follow_process".into(), false);
-        config
-            .bools
-            .insert("should_selection_return_to_followed".into(), false);
-        config.bools.insert("proc_reversed".into(), false);
-        config.bools.insert("proc_per_core".into(), false);
-        config.bools.insert("proc_mem_bytes".into(), true);
-        config.bools.insert("mem_bytes".into(), false);
-        config.bools.insert("show_detailed".into(), false);
-        config.bools.insert("proc_banner_shown".into(), false);
-        config.bools.insert("show_swap".into(), true);
-        config.bools.insert("swap_disk".into(), true);
-        config.bools.insert("show_disks".into(), true);
-        config.bools.insert("show_io_stat".into(), true);
-        config.bools.insert("io_mode".into(), false);
-        config.bools.insert("io_graph_combined".into(), false);
-        config.bools.insert("mem_graphs".into(), true);
-        config.bools.insert("net_sync".into(), true);
-        config.bools.insert("net_auto".into(), true);
-        config.bools.insert("dragging_scroll".into(), false);
-        config.bools.insert("swap_upload_download".into(), false);
-        config.bools.insert("tty_mode".into(), false);
-        config.bools.insert("force_tty".into(), false);
-        config.bools.insert("truecolor".into(), true);
-        config.bools.insert("lowcolor".into(), false);
-        config.bools.insert("rounded_corners".into(), true);
-        config.bools.insert("save_config_on_exit".into(), true);
-        config.bools.insert("disable_mouse".into(), false);
-        config.bools.insert("background_update".into(), true);
-        config.bools.insert("base_10_sizes".into(), false);
-        config.bools.insert("check_temp".into(), true);
-        config.bools.insert("cpu_temp_only".into(), false);
-        config.bools.insert("show_coretemp".into(), true);
-        config.bools.insert("cpu_single_graph".into(), false);
-        config.bools.insert("cpu_invert_lower".into(), true);
-        config.bools.insert("show_cpu_watts".into(), true);
-        config.bools.insert("show_cpu_freq".into(), true);
-        config.bools.insert("show_uptime".into(), true);
-        config.bools.insert("show_battery".into(), true);
-        config.bools.insert("show_battery_watts".into(), true);
-        config.bools.insert("cpu_bottom".into(), false);
-        config.bools.insert("gpu_mirror_graph".into(), true);
-        config.bools.insert("proc_colors".into(), true);
-        config.bools.insert("proc_gradient".into(), true);
-        config.bools.insert("proc_cpu_graphs".into(), true);
-        config.bools.insert("proc_per_core".into(), false);
-        config.bools.insert("vim_keys".into(), false);
-        config.ints.insert("update_ms".into(), 2000);
-        config.ints.insert("net_download".into(), 100);
-        config.ints.insert("net_upload".into(), 100);
-        config.ints.insert("proc_start".into(), 0);
-        config.ints.insert("proc_selected".into(), 0);
-        config.ints.insert("proc_last_selected".into(), 0);
-        config.ints.insert("proc_followed".into(), 0);
-        config.ints.insert("detailed_pid".into(), 0);
-        config.ints.insert("followed_pid".into(), 0);
-        config.ints.insert("proc_tree_auto_collapse".into(), 0);
-        config.ints.insert("proc_expand_pid".into(), 0);
-        config.ints.insert("proc_collapse_pid".into(), 0);
-        config.ints.insert("proc_toggle_children_pid".into(), 0);
-        config.ints.insert("proc_selected_pid".into(), 0);
-        config
-            .strings
-            .insert("color_theme".into(), "Default".into());
-        config
-            .strings
-            .insert("proc_sorting".into(), "cpu lazy".into());
-        config.strings.insert("temp_scale".into(), "celsius".into());
-        config.strings.insert("log_level".into(), "INFO".into());
-        // C++ default (verified via --default-config); without it the
-        // header clock is skipped as "empty format" (update_clock :335).
-        config.strings.insert("clock_format".into(), "%X".into());
-        config
-            .strings
-            .insert("graph_symbol".into(), "braille".into());
-        config
-            .strings
-            .insert("graph_symbol_cpu".into(), "default".into());
-        config
-            .strings
-            .insert("graph_symbol_mem".into(), "default".into());
-        config
-            .strings
-            .insert("graph_symbol_net".into(), "default".into());
-        config
-            .strings
-            .insert("graph_symbol_proc".into(), "default".into());
-        config
-            .strings
-            .insert("graph_symbol_gpu".into(), "default".into());
-        config
-            .strings
-            .insert("cpu_graph_upper".into(), "Auto".into());
-        config
-            .strings
-            .insert("cpu_graph_lower".into(), "Auto".into());
-        config
-            .strings
-            .insert("custom_cpu_name".into(), String::new());
-        config
-            .strings
-            .insert("shown_boxes".into(), "cpu mem net proc".into());
-        config
-            .strings
-            .insert("disable_presets".into(), "Default".into());
-        config.strings.insert("presets".into(), String::new());
-        config.strings.insert("proc_filter".into(), String::new());
+        // Seeded defaults live in `btop_config::Config::defaults` (one
+        // source of truth shared with `--default-config`).
+        let config = Config::defaults();
         Self {
             config,
             state: AppState::default(),
@@ -1557,11 +1436,30 @@ mod tests {
     }
 
     #[test]
-    fn cycle_preset_default_no_user_presets_noops() {
+    fn cycle_preset_default_cycles_upstream_presets() {
+        // `presets` now seeds the upstream default (btop_config.cpp:278:
+        // three user presets), so with `disable_presets="Default"` (the
+        // upstream default) cycling lands on the first user preset.
+        let mut w = world();
+        assert_eq!(w.config.get_s("disable_presets"), Some("Off"));
+        w.config
+            .strings
+            .insert("disable_presets".into(), "Default".into());
+        let mut s = FakeSys::default();
+        let r = execute_single(&mut w, &mut s, 100, 30, &Action::CyclePreset { dir: 1 });
+        assert_eq!(w.current_preset, Some(1));
+        assert!(!r.is_empty());
+    }
+
+    #[test]
+    fn cycle_preset_empty_presets_noops() {
+        // No user presets at all (only the implicit default): nothing to
+        // cycle to.
         let mut w = world();
         w.config
             .strings
             .insert("disable_presets".into(), "Default".into());
+        w.config.strings.insert("presets".into(), String::new());
         let mut s = FakeSys::default();
         let r = execute_single(&mut w, &mut s, 100, 30, &Action::CyclePreset { dir: 1 });
         assert!(r.is_empty());
@@ -1628,9 +1526,12 @@ mod tests {
         w.config
             .strings
             .insert("graph_symbol_mem".into(), "default".into());
+        let before = w.config.get_b("mem_below_net");
         let r = apply_preset(&mut w, "mem:0:braille", false);
         assert!(!r.ok);
-        assert_eq!(w.config.get_b("mem_below_net"), None);
+        // No config writes on failure: value unchanged (it is seeded by
+        // defaults, so assert stability rather than absence).
+        assert_eq!(w.config.get_b("mem_below_net"), before);
     }
 
     #[test]

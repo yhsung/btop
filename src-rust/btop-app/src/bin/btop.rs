@@ -29,9 +29,9 @@
 //! per-tick boxes still get color from the compiled-in `Default_theme`
 //! the P3 tick builds itself; only the boot outline pre-print below
 //! renders uncolored until `World::theme` is filled);
-//! `Logger::init` has no port (warnings go to stderr); usage/help/version
-//! printers are M4 CLI wiring (`--help`/`--version` exit `0` silently,
-//! parse errors exit non-silently with the parser code).
+//! `Logger::init` has no port (warnings go to stderr); CLI printers
+//! (`usage`/`help`/`version`/`build_info`/`default_config` + error lines,
+//! src/btop_cli.cpp) are wired through `btop_config::cli`.
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -84,12 +84,21 @@ fn main() {
         );
     }
 
-    // btop.cpp:838-851. Printers are M4 wiring — exit with the parser
-    // code (`0` for `--help`/`--version`/`--default-config`).
+    // btop.cpp:838-851. Printers print to stdout inside `Cli::parse`
+    // (src/btop_cli.cpp:54-199); on `Err != 0` the caller adds `usage()`
+    // + `help_hint()` (src/btop.cpp:847-857). Flush before `exit`:
+    // `process::exit` never flushes stdout, while C++ returning from
+    // `main` does.
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cli = match cli::parse(&args) {
         Ok(cli) => cli,
-        Err(code) => std::process::exit(code),
+        Err(code) => {
+            if code != 0 {
+                print!("{}{}", cli::usage_text(), cli::help_hint_text());
+            }
+            let _ = std::io::stdout().flush();
+            std::process::exit(code);
+        }
     };
 
     // btop.cpp:933-1000. `init_locale` owns the hunt; the caller owns
