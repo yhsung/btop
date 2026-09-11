@@ -687,7 +687,7 @@ fn proc_key(
         // :461-490. update_following (:489) rides in the Detail contracts.
         if view.selected == 0 && !view.show_detailed {
             // :462-464 guard: bare return.
-            return Some(Vec::new());
+            Some(Vec::new())
         } else if view.selected > 0 && view.detailed_pid != view.selected_pid {
             // :465-474 detail open.
             let mut out = vec![

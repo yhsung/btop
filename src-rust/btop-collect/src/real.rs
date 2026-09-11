@@ -1103,7 +1103,13 @@ impl MacOsBackend for RealBackend {
         let mut out = Vec::new();
         let mut path = vec![0u8; 4096];
         let mut ti = vec![0u8; 96];
-        for chunk in buf.chunks_exact(648) {
+        // Manual chunking (not chunks_exact): identical semantics — a trailing
+        // partial struct is dropped — while staying compatible with the
+        // pinned nightly-2025-02-16 (no as_chunks) and silencing
+        // clippy::chunks_exact_to_as_chunks on newer toolchains.
+        let n_structs = buf.len() / 648;
+        for i in 0..n_structs {
+            let chunk = &buf[i * 648..(i + 1) * 648];
             let pid = read_i32(chunk, 40);
             if pid < 1 {
                 continue;

@@ -154,7 +154,7 @@ pub fn classify_option(name: &str, store: &OptionsStore) -> OptKind {
     } else if store.ints.contains_key(name) {
         OptKind::Int
     } else if store.strings.contains_key(name) {
-        if BROWSABLE_OPTIONS.iter().any(|b| *b == name) {
+        if BROWSABLE_OPTIONS.contains(&name) {
             OptKind::Browsable
         } else {
             OptKind::Editable
@@ -233,7 +233,7 @@ fn path_stem(p: &str) -> String {
 /// options. `color_theme` matches full path or filename (`:1668-1680`);
 /// every other option matches exactly (`:1682`).
 pub fn browse_label(name: &str, value: &str, list: &[String]) -> Option<String> {
-    if !BROWSABLE_OPTIONS.iter().any(|b| *b == name) {
+    if !BROWSABLE_OPTIONS.contains(&name) {
         return None;
     }
     let pos = list_position(name, value, list).unwrap_or(list.len());
@@ -384,7 +384,7 @@ pub fn commit_edit(
         // The enter arm requires isEditable (:1431: enter/e/E only fires
         // `when selPred.test(isEditable)`): browsables commit via cycling,
         // never via the editor.
-        if BROWSABLE_OPTIONS.iter().any(|b| *b == name) {
+        if BROWSABLE_OPTIONS.contains(&name) {
             return Err(format!("option '{name}' is not editable"));
         }
         // :1387-1389, :1408-1409: stringValid → set, else validError.
@@ -458,7 +458,7 @@ pub fn flip_or_cycle(
         store.bools.insert(name.to_string(), next);
         Ok(flip_bool_actions(name, next, store))
     } else if store.strings.contains_key(name) {
-        if !BROWSABLE_OPTIONS.iter().any(|b| *b == name) {
+        if !BROWSABLE_OPTIONS.contains(&name) {
             return Ok(vec![]); // plain strings: left/right is NoChange (:1584-1585)
         }
         let list = match list {

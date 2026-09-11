@@ -132,12 +132,10 @@ fn publish_flags(flags: Arc<SignalFlags>, term: Option<Arc<TermWrapper>>) {
     // refs are dropped only after both new pointers are stored below.
     // `expect` is fine: install never runs in signal context, and a
     // poisoned boot mutex is unrecoverable.
-    let old_flags = std::mem::replace(
-        &mut *OWNING_FLAGS
-            .lock()
-            .expect("signal flags owner slot poisoned"),
-        Some(flags),
-    );
+    let old_flags = OWNING_FLAGS
+        .lock()
+        .expect("signal flags owner slot poisoned")
+        .replace(flags);
     let old_term = std::mem::replace(
         &mut *OWNING_TERM.lock().expect("crash term owner slot poisoned"),
         term,

@@ -656,7 +656,9 @@ impl MenuSystem {
     ) -> (MenuOutcome, Vec<Action>) {
         let max_items = CATEGORIES.iter().map(|c| c.len()).max().unwrap_or(0);
         let mut height = (ctx.term_h.saturating_sub(7)).min(max_items * 2 + 4);
-        if height % 2 != 0 {
+        // Even height (bitwise oddness test: is_multiple_of needs Rust 1.87+,
+        // above the pinned nightly-2025-02-16).
+        if (height & 1) == 1 {
             height = height.saturating_sub(1);
         }
         let tab = self.options.tab.min(CATEGORIES.len().saturating_sub(1));

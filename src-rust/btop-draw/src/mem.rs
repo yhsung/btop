@@ -287,7 +287,7 @@ fn render_mem_swap(
             pal.box_color,
             crate::symbols::box_chars::DIV_LEFT,
             pal.div_line,
-            &crate::symbols::box_chars::H_LINE.repeat((mem_width - 1).max(0) as usize),
+            crate::symbols::box_chars::H_LINE.repeat((mem_width - 1).max(0) as usize),
             if f.show_disks {
                 ""
             } else {
@@ -845,9 +845,7 @@ fn render_disks_normal(
         }
 
         // Free row (:1470-1475).
-        if free_metered
-            && n_disks * 3 + if f.show_io_stat { input.disk_ios } else { 0 } <= height - 1
-        {
+        if free_metered && n_disks * 3 + if f.show_io_stat { input.disk_ios } else { 0 } < height {
             out += &mv_to(y + 1 + cy, x + 1 + cx);
             if big_disk {
                 out += " Free:";
@@ -866,7 +864,7 @@ fn render_disks_normal(
             );
             out += &rjust_b(&human_free, if big_disk { 9 } else { 5 });
             cy += 1;
-            if n_disks * 4 + if f.show_io_stat { input.disk_ios } else { 0 } <= height - 1 {
+            if n_disks * 4 + if f.show_io_stat { input.disk_ios } else { 0 } < height {
                 cy += 1; // :1474 blank gap row
             }
         }
@@ -910,7 +908,7 @@ pub fn draw_mem(input: &MemDrawInput, geom: &MemGeom, theme: &HashMap<String, St
             mv_l(1),
             pal.div_line,
             crate::symbols::box_chars::DIV_LEFT,
-            &crate::symbols::box_chars::H_LINE.repeat(geom.disks_width.max(0) as usize),
+            crate::symbols::box_chars::H_LINE.repeat(geom.disks_width.max(0) as usize),
             pal.box_color,
             FX_UB,
             crate::symbols::box_chars::DIV_RIGHT,

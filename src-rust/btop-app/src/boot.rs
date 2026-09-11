@@ -269,7 +269,7 @@ fn sysctl_bytes(name: &str) -> Option<Vec<u8>> {
 /// no such guard in C++, so it takes the token verbatim.
 pub fn trim_name(name: String) -> String {
     let words: Vec<&str> = name.split_whitespace().collect();
-    let has = |t: &str| words.iter().any(|w| *w == t);
+    let has = |t: &str| words.contains(&t);
     let token_after_cpu = |reject_at: bool| {
         let pos = words.iter().position(|w| *w == "CPU")?;
         let next = words.get(pos + 1)?;

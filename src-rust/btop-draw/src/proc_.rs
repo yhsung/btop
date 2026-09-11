@@ -1328,11 +1328,11 @@ fn render_row(
             FX_UB.to_string(),
         )
     } else if flags.proc_colors {
-        let mem_v: i64 = if total_mem == 0 {
-            0 // ARM/harness div-by-zero semantics (see module docs).
-        } else {
-            (p.mem.saturating_mul(100) / total_mem) as i64
-        };
+        let mem_v: i64 = p
+            .mem
+            .saturating_mul(100)
+            .checked_div(total_mem)
+            .unwrap_or(0) as i64; // total_mem == 0 → 0: ARM/harness div-by-zero semantics (see module docs).
         let vs = [p.cpu_p.round() as i64, mem_v, (p.threads / 3) as i64];
         let faded = flags.proc_gradient && !lowcolor;
         let mut cols = [String::new(), String::new(), String::new()];

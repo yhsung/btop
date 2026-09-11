@@ -24,6 +24,7 @@ use btop_draw::net::{NetDrawInput, NetFlags, NetStat};
 use btop_draw::proc_::{matches_filter, ProcDetail, ProcDrawInput, ProcFlags, ProcInfo};
 use btop_tools::mouse::MouseMap;
 use std::cmp::Ordering;
+use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
@@ -945,11 +946,11 @@ pub fn assemble_proc(
         s if s.contains("cpu") => {
             ordered.sort_by(|a, b| b.cpu_p.partial_cmp(&a.cpu_p).unwrap_or(Ordering::Equal))
         }
-        s if s.contains("mem") => ordered.sort_by(|a, b| b.mem.cmp(&a.mem)),
+        s if s.contains("mem") => ordered.sort_by_key(|a| Reverse(a.mem)),
         s if s.contains("program") || s.contains("name") => {
             ordered.sort_by(|a, b| a.name.cmp(&b.name))
         }
-        _ => ordered.sort_by(|a, b| a.pid.cmp(&b.pid)),
+        _ => ordered.sort_by_key(|a| a.pid),
     }
     if state.proc_reversed {
         ordered.reverse();
