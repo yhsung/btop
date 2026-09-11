@@ -1,0 +1,60 @@
+name: rust-release
+
+# CD for the btop-rust port: on tag push (v*), build release binaries and
+# publish a GitHub Release with per-platform tarballs. Each matrix job
+# builds, packages, and attaches its own artifact directly with the `gh`
+# CLI that ships on every runner (create-or-upload keeps the two OS jobs
+# race-free). Only pinned actions already used in-repo: checkout +
+# dtolnay toolchain.
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            dist: btop-aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            dist: btop-x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --release --locked -p btop-app --target ${{ matrix.target }}
+        working-directory: src-rust
+      - name: Package tarball
+        run: |
+          mkdir -p dist/${{ matrix.dist }}
+          cp target/${{ matrix.target }}/release/btop dist/${{ matrix.dist }}/
+          tar -czf dist/${{ matrix.dist }}.tar.gz -C dist ${{ matrix.dist }}
+        working-directory: src-rust
+      - name: Attach to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          # create-or-upload: whichever OS job loses the create race uploads
+          # into the release the winner just made.
+          gh release create "$TAG" "src-rust/dist/${{ matrix.dist }}.tar.gz" \
+            --title "btop-rust $TAG" \
+            --generate-notes \
+          || gh release upload "$TAG" "src-rust/dist/${{ matrix.dist }}.tar.gz" --clobber
