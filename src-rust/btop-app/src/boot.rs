@@ -608,9 +608,11 @@ pub fn boot_layout(w: &mut World, term_w: i64, term_h: i64) {
         cpu_height_p: 32,
         mem_width_p: 45,
         net_height_p: 28,
-        show_disks: w.config.get_b("show_disks").unwrap_or(false),
-        swap_disk: w.config.get_b("swap_disk").unwrap_or(false),
-        mem_graphs: w.config.get_b("mem_graphs").unwrap_or(false),
+        // Layout-flag fallbacks mirror `btop --default-config` (verified):
+        // show_disks/mem_graphs/swap_disk default true (same as tick.rs).
+        show_disks: w.config.get_b("show_disks").unwrap_or(true),
+        swap_disk: w.config.get_b("swap_disk").unwrap_or(true),
+        mem_graphs: w.config.get_b("mem_graphs").unwrap_or(true),
         has_swap: w.state.has_swap,
         swap_upload_download: w.config.get_b("swap_upload_download").unwrap_or(false),
         gpus_extra_height: 0,

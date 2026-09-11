@@ -190,9 +190,11 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
         let cpu_bottom = w.config.get_b("cpu_bottom").unwrap_or(false);
         let mem_below_net = w.config.get_b("mem_below_net").unwrap_or(false);
         let proc_left = w.config.get_b("proc_left").unwrap_or(false);
-        let show_disks = w.config.get_b("show_disks").unwrap_or(false);
-        let mem_graphs = w.config.get_b("mem_graphs").unwrap_or(false);
-        let swap_disk = w.config.get_b("swap_disk").unwrap_or(false);
+        // Layout-flag fallbacks mirror `btop --default-config` (verified):
+        // show_disks/mem_graphs/swap_disk default true.
+        let show_disks = w.config.get_b("show_disks").unwrap_or(true);
+        let mem_graphs = w.config.get_b("mem_graphs").unwrap_or(true);
+        let swap_disk = w.config.get_b("swap_disk").unwrap_or(true);
         let swap_upload_download = w.config.get_b("swap_upload_download").unwrap_or(false);
         let has_swap = w.state.has_swap;
         let li = LayoutInput {
