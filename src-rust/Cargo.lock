@@ -79,6 +79,9 @@ dependencies = [
 [[package]]
 name = "btop-tools"
 version = "0.1.0"
+dependencies = [
+ "nix",
+]
 
 [[package]]
 name = "cfg-if"

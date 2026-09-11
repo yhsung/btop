@@ -4,8 +4,8 @@
 //! implementations land across T2–T7 per `docs/superpowers/plans/
 //! 2026-09-06-app-p4.md`.
 
-/// Term wrapper (T2). Placeholder.
-pub mod term {}
+/// Term wrapper (T2).
+pub mod term;
 
 /// Locale hunt + UTF-8 detection (T2). Placeholder.
 pub mod locale {}
