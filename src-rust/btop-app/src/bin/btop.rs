@@ -163,8 +163,10 @@ fn main() {
     // btop.cpp:1076-1080.
     apply_preset_default(&mut world, cli.preset);
 
-    // btop.cpp:1003-1006.
-    if !term.init() {
+    // btop.cpp:1003-1006. `Term::init` honors `disable_mouse`
+    // (btop_tools.cpp:168); the flag is settled by config load above.
+    let mouse_on = !world.config.get_b("disable_mouse").unwrap_or(false);
+    if !term.init_with_mouse(mouse_on) {
         boot_fail(
             &mut world,
             &term,

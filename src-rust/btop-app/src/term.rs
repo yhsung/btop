@@ -40,6 +40,12 @@ impl Default for TermState {
 /// share an `Arc<dyn TermOps>` between the wrapper and tests.
 pub trait TermOps: Send + Sync {
     fn init(&self) -> bool;
+    /// Init with explicit mouse tracking (`Term::init_with_mouse`,
+    /// btop_tools.cpp:168 honors `disable_mouse`). Default honors the
+    /// historical mouse-on behavior; `RealOps` forwards the flag.
+    fn init_with_mouse(&self, _enabled: bool) -> bool {
+        self.init()
+    }
     fn refresh(&self, only_check: bool) -> bool;
     fn restore(&self);
     fn get_min_size(&self) -> (u16, u16);
@@ -70,6 +76,10 @@ impl Default for RealOps {
 impl TermOps for RealOps {
     fn init(&self) -> bool {
         self.inner.init()
+    }
+
+    fn init_with_mouse(&self, enabled: bool) -> bool {
+        self.inner.init_with_mouse(enabled)
     }
 
     fn refresh(&self, only_check: bool) -> bool {
@@ -231,6 +241,17 @@ impl TermWrapper {
 
     pub fn init(&self) -> bool {
         let ok = self.ops.init();
+        self.state.initialized.store(ok, Ordering::Relaxed);
+        if ok {
+            self.sync_dims();
+        }
+        ok
+    }
+
+    /// Init honoring `disable_mouse` (btop.cpp:1003-1006 path reads the
+    /// flag from Config before `Term::init`).
+    pub fn init_with_mouse(&self, enabled: bool) -> bool {
+        let ok = self.ops.init_with_mouse(enabled);
         self.state.initialized.store(ok, Ordering::Relaxed);
         if ok {
             self.sync_dims();

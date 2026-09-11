@@ -66,6 +66,22 @@ run_case tree-collapse "" e E
 check "tree collapse-all" "[+]─" "$OUT/tree-collapse.txt"
 run_case detail-enter "" Down Enter
 check "detail pane" "Status:" "$OUT/detail-enter.txt"
+# mouse click: SGR press+release on proc row 3 (col 70, line 18), then 't'
+# opens the signal menu iff the click selected the row.
+mouse_click_case() {
+  local home; home="$(mktemp -d /tmp/parity-key-XXXXXX)"
+  tmux new-session -d -s "$SESSION" -x 120 -y 40
+  tmux send-keys -t "$SESSION" "HOME=$home TERM=xterm-256color $BIN -u 500" Enter
+  sleep 3
+  tmux send-keys -t "$SESSION" $'\x1b[<0;70;18M'; sleep 1
+  tmux send-keys -t "$SESSION" $'\x1b[<0;70;18m'; sleep 1
+  tmux send-keys -t "$SESSION" t; sleep 2
+  tmux capture-pane -p -t "$SESSION" > "$OUT/mouse-click.txt"
+  tmux kill-session -t "$SESSION" 2>/dev/null || true
+  rm -rf "$home"
+}
+mouse_click_case
+check "mouse click selects" "Send signal:" "$OUT/mouse-click.txt"
 
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

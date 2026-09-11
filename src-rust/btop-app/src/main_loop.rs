@@ -511,12 +511,12 @@ fn dispatch_key(
     input_state.filtering = world.config.get_b("proc_filtering").unwrap_or(false);
     input_state.vim_keys = world.config.get_b("vim_keys").unwrap_or(false);
     let view = view_from_world(world);
-    // Borrow the menu maps before the mutable `execute_all` below
-    // (disjoint from the `&mut World` only across statements).
+    // Box maps come from the last tick's draws (`state.mouse_maps`);
+    // menu maps overlay them (last-wins inside `decode_key`).
     let actions = {
         let menu_maps = &world.menu.mouse_maps;
-        let empty: &[btop_tools::mouse::MouseMap] = &[];
-        handle_key(key, empty, menu_maps, input_state, &view, editor, now_ms)
+        let box_maps = &world.state.mouse_maps;
+        handle_key(key, box_maps, menu_maps, input_state, &view, editor, now_ms)
     };
     // `Config::unlock` when the runner is idle (btop.cpp:1168).
     world.config.unlock();

@@ -217,8 +217,6 @@ impl InputPoll for RealInputPoll {
         // ownership and performs no mutation.
         let fd = unsafe { BorrowedFd::borrow_raw(0) };
         let mut fds = [PollFd::new(fd, PollFlags::POLLIN)];
-        // `unwrap_or(0)` maps both timeout and an EINTR-broken wait to "no
-        // input" — see the latency-bound note at the main-loop poll site.
         let ready = poll(
             &mut fds,
             PollTimeout::from(saturate_poll_quantum(timeout_ms)),

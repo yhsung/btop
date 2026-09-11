@@ -226,9 +226,10 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
         let layout = calc_sizes(&li);
         // cpp:1093 + cpp:1632: Proc::select_max is set by calcSizes; mirror
         // it into both World::layout (draw-side) and state.proc_geom
-        // (input-side used by sink selection math).
+        // (input-side used by sink selection math). The base rect rides
+        // along: proc click hit-testing (`proc_mouse` :393-460) reads it.
         w.layout = layout.clone();
-        w.state.proc_geom.select_max = layout.proc.select_max;
+        w.state.proc_geom = layout.proc.clone();
         w.recalc_layout = false;
         // cpp:1129: Draw::banner_gen(0,0,false,true) (headless no-op here;
         // menu system owns the overlay string on the menu path).
@@ -429,7 +430,11 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
         // cpp:637: pass force_redraw / no_update to Proc::draw.
         let mut proc_input = proc_input;
         proc_input.force_redraw = force_redraw;
-        let s = draw_proc(&proc_input, &w.layout.proc, &theme, &mut Vec::new());
+        // Box click-maps ride to input dispatch via `state.mouse_maps`
+        // (C++ `Input::mouse_mappings` fills during draw).
+        let mut box_maps = Vec::new();
+        let s = draw_proc(&proc_input, &w.layout.proc, &theme, &mut box_maps);
+        w.state.mouse_maps = box_maps;
         output.push_str(&s);
         ran_boxes.push("proc".to_string());
     }
