@@ -200,6 +200,14 @@ impl Default for RealInputPoll {
     }
 }
 
+/// Clamp a poll quantum to the `nix::poll` timeout width. All live call
+/// sites pass ≤1000ms, so this only hardens against future callers: a
+/// bare `as u16` would wrap (e.g. 100_000 → 34464), saturation caps at
+/// `u16::MAX` instead.
+fn saturate_poll_quantum(timeout_ms: u64) -> u16 {
+    u16::try_from(timeout_ms).unwrap_or(u16::MAX)
+}
+
 impl InputPoll for RealInputPoll {
     fn poll(&self, timeout_ms: u64) -> bool {
         use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
@@ -208,7 +216,13 @@ impl InputPoll for RealInputPoll {
         // ownership and performs no mutation.
         let fd = unsafe { BorrowedFd::borrow_raw(0) };
         let mut fds = [PollFd::new(fd, PollFlags::POLLIN)];
-        let ready = poll(&mut fds, PollTimeout::from(timeout_ms as u16)).unwrap_or(0);
+        // `unwrap_or(0)` maps both timeout and an EINTR-broken wait to "no
+        // input" — see the latency-bound note at the main-loop poll site.
+        let ready = poll(
+            &mut fds,
+            PollTimeout::from(saturate_poll_quantum(timeout_ms)),
+        )
+        .unwrap_or(0);
         if ready <= 0 {
             return false;
         }
@@ -363,4 +377,18 @@ fn render_too_small(width: u16, height: u16, min_w: u16, min_h: u16, out: &mut S
         fh = fg_h,
         reset = RESET,
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poll_quantum_saturates_instead_of_wrapping() {
+        assert_eq!(saturate_poll_quantum(0), 0);
+        assert_eq!(saturate_poll_quantum(1000), 1000);
+        assert_eq!(saturate_poll_quantum(u64::from(u16::MAX)), u16::MAX);
+        assert_eq!(saturate_poll_quantum(u64::from(u16::MAX) + 1), u16::MAX);
+        assert_eq!(saturate_poll_quantum(u64::MAX), u16::MAX);
+    }
 }

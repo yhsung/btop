@@ -31,6 +31,11 @@ use crate::term::TermWrapper;
 /// Why [`main_loop`] returned. C++ never returns (it only leaves via
 /// `clean_quit`, which `_Exit`s); the enum is the testable stand-in — `fn
 /// main` maps [`LoopExit::Quit`] to the real [`crate::clean_quit`].
+/// C++'s try/catch around the loop (:1184-1187 → `clean_quit(1)`) has no
+/// port: a Rust panic unwinds past the loop to the runtime, where the
+/// atexit fallback restores the term and marks `quitting` — skipping
+/// `exit_error_msg`, `Config::write`, and the runtime print. Acceptable:
+/// single-threaded, and panics are bugs, not control flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopExit {
     /// `should_quit`, `quit_requested` (the `q` key), or min-size `q`.
@@ -562,6 +567,9 @@ pub fn main_loop(
         }
 
         // ── Flags ──
+        // Independent `if`s, not C++'s else-if chain (:1111-1131): every
+        // set flag is serviced in the same iteration; sleep/reload/continue
+        // each set `resized`, which the arm below coalesces — benign.
         if world.quit_requested || world.signal_flags.should_quit.load(Ordering::SeqCst) {
             return LoopExit::Quit(0); // :1114-1116 (+ deferred `q`).
         }
@@ -649,7 +657,11 @@ pub fn main_loop(
                 future_time = current;
             // :1169 — wait on input OR signal (the pselect site; the
             // SIGUSR1/SIGWINCH mask design is documented on `RealInputPoll`
-            // and below).
+            // and below). `false` covers both timeout and an EINTR-broken
+            // wait; with `SA_RESTART` (see the install site) the kernel may
+            // instead restart the wait, so a pending flag is serviced at
+            // most one quantum late (≤1000ms here) — the outer flag checks
+            // make that bound exact.
             } else if env.input.poll((future_time - current).min(1000)) {
                 let (tw, th) = (env.term.width() as usize, env.term.height() as usize);
                 let key = env.input.get();

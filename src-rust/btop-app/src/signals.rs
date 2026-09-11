@@ -226,6 +226,14 @@ impl Default for RealInstaller {
     }
 }
 
+/// `SA_RESTART` is kept deliberately: without it every slow syscall on
+/// the collect/draw path would surface `EINTR` to callers that don't
+/// expect it; with it, a signal arriving mid-`poll` may restart the wait
+/// instead of interrupting it. Worst case the loop services a pending flag
+/// one poll quantum late (≤1000ms inner bound, 10ms in the min-size loop)
+/// — immediacy is not guaranteed, correctness is (level-triggered flags,
+/// re-checked every outer iteration; C++ likewise only breaks out every
+/// ≤1000ms at btop.cpp:1170/1177).
 fn install_sigaction(sig: Signal, handler: extern "C" fn(c_int)) -> Result<(), String> {
     let action = SigAction::new(
         SigHandler::Handler(handler),

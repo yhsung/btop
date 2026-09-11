@@ -15,6 +15,15 @@
 //! (:1093-1097) → `update_ms`/`future_time` (:1099-1106, via
 //! `init_tick_clock`) → `main_loop` → `clean_quit`.
 //!
+//! Order vs literal `:862-1097` — three swaps, all brief-prescribed: (1)
+//! locale runs before config-dirs (C++ settles dirs first); the hunt only
+//! touches process env, so nothing downstream observes the difference.
+//! (2) signals+atexit install before `Shared::init`, so handlers cover the
+//! whole boot. (3) `tty_mode`/`Term::init`/dim-wait run after the preset
+//! (C++ inits the term right after locale) — a probe failure then quits
+//! before touching the terminal, and the tty flag is settled before the
+//! term it configures. Net effect is identical on every success path.
+//!
 //! DEVIATIONS (all plan-blessed deferreds): `Theme::updateThemes`/
 //! `setTheme` (+ `banner_gen`) have no port yet (P4 known-deferred — the
 //! per-tick boxes still get color from the compiled-in `Default_theme`

@@ -178,6 +178,17 @@ impl Config {
     /// (P4 `clean_quit`) gates on `save_config_on_exit` and passes
     /// `World::conf_file`; an empty path is a no-op error, mirroring the
     /// `conf_file.empty()` early return (:837).
+    ///
+    /// DEVIATION (documented gap): C++ additionally gates on `write_new`
+    /// (src/btop_config.cpp:837 — skips the write when nothing changed),
+    /// which is set in four places (`_locked` on any known-key write at
+    /// :462-463, missing conf file at :769, version-header mismatch at
+    /// :783, non-empty load warnings at :832). The port always rewrites:
+    /// every quit reformats the file and drops the description comments
+    /// (see the table-order note above) instead of leaving an untouched
+    /// file alone. A faithful gate would thread a dirty flag through
+    /// `set_*`/`load`/`write` plus seed the missing-file case — kept as a
+    /// doc note until a caller needs the leave-untouched behavior.
     pub fn write(&self, path: &Path) -> Result<(), String> {
         if path.as_os_str().is_empty() {
             return Err("empty config path".to_string());
