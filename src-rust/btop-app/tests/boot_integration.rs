@@ -250,7 +250,12 @@ fn cpu_only_world() -> World {
 
 #[test]
 fn outlines_hidden_by_default_emit_nothing() {
-    let w = World::default();
+    // terminal_sync disabled explicitly: this test pins the hidden-boxes
+    // shape, while World::default() follows C++ (sync on).
+    let w = World {
+        terminal_sync: false,
+        ..World::default()
+    };
     let mut out = String::new();
     print_box_outlines(&w, &mut out);
     assert!(out.is_empty(), "unexpected outline bytes: {out:?}");
@@ -269,7 +274,10 @@ fn outlines_sync_pair_only_when_terminal_sync() {
 
 #[test]
 fn outlines_cpu_golden() {
-    let w = cpu_only_world();
+    // terminal_sync disabled explicitly: the golden pins box bytes, while
+    // World::default() follows C++ (sync on).
+    let mut w = cpu_only_world();
+    w.terminal_sync = false;
     let mut out = String::new();
     print_box_outlines(&w, &mut out);
     assert!(!out.is_empty());

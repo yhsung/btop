@@ -148,7 +148,14 @@ impl Default for World {
         // `Config::set_b` returns false on an unknown key and the test
         // would silently drop the write). Real Config seeding is `init`
         // work — out of scope (Task 4 / live).
-        config.bools.insert("theme_background".into(), false);
+        // Seeded defaults mirror `btop --default-config` (verified): every
+        // `true` below matches upstream; the rest are false upstream too,
+        // except runtime-only keys (proc_filtering, pause_proc_list,
+        // follow_process, should_selection_return_to_followed,
+        // proc_banner_shown, show_detailed, dragging_scroll, mem_bytes,
+        // cpu_temp_only, tty_mode/force_tty/lowcolor state) which stay
+        // false by design.
+        config.bools.insert("theme_background".into(), true);
         config.bools.insert("vim_keys".into(), false);
         config.bools.insert("proc_filtering".into(), false);
         config.bools.insert("proc_tree".into(), false);
@@ -159,46 +166,45 @@ impl Default for World {
             .insert("should_selection_return_to_followed".into(), false);
         config.bools.insert("proc_reversed".into(), false);
         config.bools.insert("proc_per_core".into(), false);
-        config.bools.insert("proc_mem_bytes".into(), false);
+        config.bools.insert("proc_mem_bytes".into(), true);
         config.bools.insert("mem_bytes".into(), false);
         config.bools.insert("show_detailed".into(), false);
         config.bools.insert("proc_banner_shown".into(), false);
-        config.bools.insert("show_swap".into(), false);
-        config.bools.insert("swap_disk".into(), false);
-        config.bools.insert("show_disks".into(), false);
-        config.bools.insert("show_io_stat".into(), false);
+        config.bools.insert("show_swap".into(), true);
+        config.bools.insert("swap_disk".into(), true);
+        config.bools.insert("show_disks".into(), true);
+        config.bools.insert("show_io_stat".into(), true);
         config.bools.insert("io_mode".into(), false);
         config.bools.insert("io_graph_combined".into(), false);
-        config.bools.insert("mem_graphs".into(), false);
-        config.bools.insert("net_sync".into(), false);
+        config.bools.insert("mem_graphs".into(), true);
+        config.bools.insert("net_sync".into(), true);
         config.bools.insert("net_auto".into(), true);
         config.bools.insert("dragging_scroll".into(), false);
         config.bools.insert("swap_upload_download".into(), false);
         config.bools.insert("tty_mode".into(), false);
         config.bools.insert("force_tty".into(), false);
-        config.bools.insert("truecolor".into(), false);
+        config.bools.insert("truecolor".into(), true);
         config.bools.insert("lowcolor".into(), false);
-        config.bools.insert("rounded_corners".into(), false);
-        config.bools.insert("theme_background".into(), false);
-        config.bools.insert("save_config_on_exit".into(), false);
+        config.bools.insert("rounded_corners".into(), true);
+        config.bools.insert("save_config_on_exit".into(), true);
         config.bools.insert("disable_mouse".into(), false);
-        config.bools.insert("background_update".into(), false);
+        config.bools.insert("background_update".into(), true);
         config.bools.insert("base_10_sizes".into(), false);
-        config.bools.insert("check_temp".into(), false);
+        config.bools.insert("check_temp".into(), true);
         config.bools.insert("cpu_temp_only".into(), false);
-        config.bools.insert("show_coretemp".into(), false);
+        config.bools.insert("show_coretemp".into(), true);
         config.bools.insert("cpu_single_graph".into(), false);
-        config.bools.insert("cpu_invert_lower".into(), false);
-        config.bools.insert("show_cpu_watts".into(), false);
-        config.bools.insert("show_cpu_freq".into(), false);
-        config.bools.insert("show_uptime".into(), false);
-        config.bools.insert("show_battery".into(), false);
-        config.bools.insert("show_battery_watts".into(), false);
+        config.bools.insert("cpu_invert_lower".into(), true);
+        config.bools.insert("show_cpu_watts".into(), true);
+        config.bools.insert("show_cpu_freq".into(), true);
+        config.bools.insert("show_uptime".into(), true);
+        config.bools.insert("show_battery".into(), true);
+        config.bools.insert("show_battery_watts".into(), true);
         config.bools.insert("cpu_bottom".into(), false);
-        config.bools.insert("gpu_mirror_graph".into(), false);
-        config.bools.insert("proc_colors".into(), false);
-        config.bools.insert("proc_gradient".into(), false);
-        config.bools.insert("proc_cpu_graphs".into(), false);
+        config.bools.insert("gpu_mirror_graph".into(), true);
+        config.bools.insert("proc_colors".into(), true);
+        config.bools.insert("proc_gradient".into(), true);
+        config.bools.insert("proc_cpu_graphs".into(), true);
         config.bools.insert("proc_per_core".into(), false);
         config.bools.insert("vim_keys".into(), false);
         config.ints.insert("update_ms".into(), 2000);
@@ -329,7 +335,7 @@ impl Default for World {
             theme_name: "Default".to_string(),
             log_level: "INFO".to_string(),
             paused: false,
-            background_update: false,
+            background_update: true,
             mouse_enabled: true,
             current_preset: None,
             quit_requested: false,
@@ -340,7 +346,7 @@ impl Default for World {
             core_remap_requested: false,
             gpu_count: 0,
             on_dev_tty: false,
-            terminal_sync: false,
+            terminal_sync: true,
             next_tick_ms: 0,
             empty_bg: String::new(),
             start_time: None,
@@ -1654,8 +1660,10 @@ mod tests {
         assert!(w.state.update_following);
         let _ = execute_single(&mut w, &mut s, 100, 30, &Action::TogglePerCore);
         assert!(w.state.per_core);
+        // Flip-relative: World seeds C++ defaults (proc_mem_bytes true).
+        let before = w.state.proc_flags.mem_bytes;
         let _ = execute_single(&mut w, &mut s, 100, 30, &Action::ToggleMemBytes);
-        assert!(w.state.proc_flags.mem_bytes);
+        assert_eq!(w.state.proc_flags.mem_bytes, !before);
     }
 
     #[test]
@@ -1826,8 +1834,10 @@ mod tests {
     fn toggle_net_sync_and_auto_flip() {
         let mut w = world();
         let mut s = FakeSys::default();
+        // Flip-relative: World seeds C++ defaults (net_sync true).
+        let before_sync = w.state.net_flags.net_sync;
         let _ = execute_single(&mut w, &mut s, 100, 30, &Action::ToggleNetSync);
-        assert!(w.state.net_flags.net_sync);
+        assert_eq!(w.state.net_flags.net_sync, !before_sync);
         let _ = execute_single(&mut w, &mut s, 100, 30, &Action::ToggleNetAuto);
         assert!(!w.state.net_flags.net_auto); // default true ⇒ flip false
     }

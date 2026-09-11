@@ -242,6 +242,11 @@ fn force_redraw_in_runs_pass_with_redraw_set() {
 #[test]
 fn overlay_non_empty_sets_paused_and_appends_overlay() {
     let mut w = harness_world();
+    // Pin pause behavior: World seeds C++ background_update=true.
+    w.background_update = false;
+    // Pin overlay shape: World seeds C++ terminal_sync=true (wraps output
+    // in ?2026h/l); these tests assert the bare merge.
+    w.terminal_sync = false;
     let mut s = FakeSys::default();
     let mut b = fake_backend();
     let ovl = "\x1b[2J\x1b[Hhello".to_string();
@@ -365,6 +370,11 @@ fn paused_keeps_clock_skips_boxes() {
     // P3 the clock is empty unless the caller sets it. Test: paused path
     // does not panic and pause_output=true is reported.
     let mut w = harness_world();
+    // Pin pause behavior: World seeds C++ background_update=true.
+    w.background_update = false;
+    // Pin overlay shape: World seeds C++ terminal_sync=true (wraps output
+    // in ?2026h/l); these tests assert the bare merge.
+    w.terminal_sync = false;
     w.state.clock.time = "12:00".to_string();
     w.state.clock.date = "2026-09-10".to_string();
     let mut s = FakeSys::default();
@@ -398,6 +408,11 @@ fn second_paused_tick_skips_boxes_and_clock() {
     // and the overlay is appended verbatim (cpp:723: `output.empty()
     // ? "" : … + conf.overlay`).
     let mut w = harness_world();
+    // Pin pause behavior: World seeds C++ background_update=true.
+    w.background_update = false;
+    // Pin overlay shape: World seeds C++ terminal_sync=true (wraps output
+    // in ?2026h/l); these tests assert the bare merge.
+    w.terminal_sync = false;
     w.state.clock.time = "12:00".to_string();
     w.state.clock.date = "2026-09-10".to_string();
     let mut s = FakeSys::default();
@@ -672,4 +687,36 @@ fn run_request_run_target_forwarded_through_sink() {
         },
     );
     assert!(!out.out.is_empty());
+}
+
+#[test]
+fn tick_mem_disks_render_names() {
+    let mut w = harness_world();
+    w.recalc_layout = true;
+    let mut s = FakeSys::default();
+    let mut b = fake_backend();
+    b.disk_mounts_q
+        .push_back(vec![("/".to_string(), "root".to_string())]);
+    b.disk_raw_q.push_back((100, 40, 4096));
+    let out = tick(
+        &mut w,
+        &mut s,
+        TickInput {
+            backend: &mut b,
+            now_ms: 0,
+            pending_resize: false,
+            should_quit: false,
+            force_redraw_in: true,
+            overlay: String::new(),
+        },
+    );
+    assert!(
+        out.out.contains("root"),
+        "disk name missing from tick output; order={:?} disks_w={} cfg_show_disks={:?} recalc={} out_len={}",
+        w.state.mem_disks_order,
+        w.layout.mem.disks_width,
+        w.config.get_b("show_disks"),
+        w.recalc_layout,
+        out.out.len(),
+    );
 }
