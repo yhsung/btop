@@ -1,0 +1,19 @@
+[package]
+name = "btop-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+btop-cli = { path = "../btop-cli" }
+btop-config = { path = "../btop-config" }
+btop-draw = { path = "../btop-draw" }
+btop-tools = { path = "../btop-tools" }
+btop-collect = { path = "../btop-collect" }
+btop-runner = { path = "../btop-runner" }
+btop-menu = { path = "../btop-menu" }
+btop-input = { path = "../btop-input" }
+nix = { version = "0.29", features = ["term", "ioctl", "signal", "fs"] }
+
+[[bin]]
+name = "btop"
+path = "src/bin/btop.rs"

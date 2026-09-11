@@ -26,6 +26,18 @@ use btop_tools::mouse::MouseMap;
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 
+// ── SignalFlags ───────────────────────────────────────────────────────────
+// C++ atomics at btop.cpp:118-124 (`resized`, `quitting`, `should_quit`,
+// `should_sleep`, `_runner_started`, `init_conf`, `reload_conf`),
+// btop.cpp:133 (`resizing`), and btop.cpp:356-359 (`stopping`, `waiting`,
+// `redraw`, `coreNum_reset`). AtomicBool fields will land here in T4 —
+// the spec calls for `Arc<AtomicBool>` flags the signal handlers flip
+// and the main loop polls.
+#[derive(Debug, Default)]
+pub struct SignalFlags {
+    // AtomicBool fields will go here in T4
+}
+
 // ── HistoryStore ──────────────────────────────────────────────────────────
 // DEVIATION from the plan sketch (`cpu_total/cpu_cores/mem_used/net_down/
 // net_up/gpu`): the draw input structs borrow richer shapes, so the store

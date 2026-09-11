@@ -42,7 +42,7 @@ use btop_input::actions::{Action, MenuKind, RunTarget, ScrollKey};
 #[cfg_attr(not(test), allow(unused_imports))]
 use btop_menu::menus::{signal_return_text, MenuCtx, MenuSystem, Menus};
 
-use crate::wiring::AppState;
+use crate::wiring::{AppState, SignalFlags};
 
 // ── World ──────────────────────────────────────────────────────────────────
 
@@ -98,6 +98,34 @@ pub struct World {
     /// session, re-emitted whenever the tick output is empty and not
     /// paused. The C++ gate is `if (empty_bg.empty()) …`; we mirror that.
     pub empty_bg: String,
+    /// Process start time (`Global::start_time`, btop.cpp:116). C++ uses
+    /// `uint64_t` of unix-seconds; here we carry `Instant` so the
+    /// uptime-print at btop.cpp:252 (`sec_to_dhms(time_s() - start_time)`)
+    /// can be computed as `start_time.elapsed()` without an extra clock
+    /// read. Set in T2 (`boot::init_chain`) before the main loop starts.
+    pub start_time: Option<std::time::Instant>,
+    /// AtomicBool flags the signal handlers flip and the main loop polls
+    /// (see [`crate::wiring::SignalFlags`] for the full list and cpp
+    /// references). T1 stub: empty; T4 fills the fields.
+    pub signal_flags: SignalFlags,
+    /// Fatal-error buffer (`Global::exit_error_msg`, btop.cpp:111). Set by
+    /// `clean_quit` on uncaught exceptions / runner stall (cpp:472, :648,
+    /// :739); printed to stderr at btop.cpp:247-251 right before `_Exit`.
+    /// P4 owns this; the sink exposes it so tests can assert on it.
+    pub exit_error_msg: Option<String>,
+    /// Pre-rendered banner string (`Draw::banner`, cached per theme —
+    /// the C++ side stores it as a global `string`; here we mirror that).
+    /// T2's `Theme::updateThemes/setTheme` writes it; T3's draw call
+    /// reads it. Empty until the theme is applied.
+    pub banner: String,
+    /// ASCII banner color/line pairs (`Global::Banner_src`, btop.cpp:89).
+    /// The Rust port mirrors it as `Vec<String>` (one per row) — each
+    /// row carries its color inline in the C++ tuple; the draw side will
+    /// re-pair them. Empty by default; T2's `boot` loads it once.
+    pub banner_src: Vec<String>,
+    /// Version string (`Global::Version`, btop.cpp:97 — `"1.4.7"`).
+    /// Surfaced by `--version` (T2 wiring) and the help footer.
+    pub version: &'static str,
 }
 
 impl Default for World {
@@ -302,6 +330,12 @@ impl Default for World {
             terminal_sync: false,
             next_tick_ms: 0,
             empty_bg: String::new(),
+            start_time: None,
+            signal_flags: SignalFlags::default(),
+            exit_error_msg: None,
+            banner: String::new(),
+            banner_src: Vec::new(),
+            version: "1.4.7",
         }
     }
 }
