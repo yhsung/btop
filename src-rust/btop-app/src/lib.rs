@@ -7,8 +7,8 @@
 /// Term wrapper (T2).
 pub mod term;
 
-/// Locale hunt + UTF-8 detection (T2). Placeholder.
-pub mod locale {}
+/// Locale hunt + UTF-8 detection (T3).
+pub mod locale;
 
 /// Signal handlers + atomic flag plumbing (T4). Placeholder.
 pub mod signals {}
