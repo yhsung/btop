@@ -117,7 +117,7 @@ fn sigusr2_sets_reload_conf_and_wakes_poll() {
 
 #[test]
 fn clear_all_resets_tick_flags_but_preserves_quitting() {
-    // `quitting` is the T6 `clean_quit` re-entrancy guard — `clear_all`
+    // `quitting` is the T7 `clean_quit` re-entrancy guard — `clear_all`
     // must not drain it, or a second exit path could re-enter cleanup.
     let f = flags();
     on_sigint(&f);

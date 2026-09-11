@@ -525,3 +525,88 @@ pub fn init_tick_clock(w: &mut World, cli_updates: Option<u32>, now_ms: u64) -> 
     w.next_tick_ms = now_ms;
     (update_ms, now_ms)
 }
+
+// ── ensure_boxes ────────────────────────────────────────────────────────────
+
+/// Default shown-boxes fallback. Mirrors the `set_boxes` gate in `fn main`
+/// (src/btop.cpp:1039-1042): when the configured `shown_boxes` fails
+/// validation the default `"cpu mem net proc"` is forced back in.
+///
+/// The C++ `Config::set_boxes` also fans the string out into the
+/// `current_boxes` vector; the port keeps `shown_boxes` as the single
+/// source of truth (no vector), so this only validates + resets. A token is
+/// legal when it is `cpu`/`mem`/`net`/`proc` or `gpu[0-9]+` (the
+/// `presets_valid` box alphabet, src/btop_config.cpp:390-404); an empty
+/// list is illegal (C++ requires at least one box to size against).
+/// Returns `true` when the configured value survived.
+pub fn ensure_boxes(w: &mut World) -> bool {
+    const DEFAULT_BOXES: &str = "cpu mem net proc";
+    let shown = w.config.get_s("shown_boxes").unwrap_or("").to_string();
+    let mut tokens = shown.split_whitespace().peekable();
+    let mut ok = tokens.peek().is_some();
+    for t in tokens {
+        let legal = matches!(t, "cpu" | "mem" | "net" | "proc")
+            || (t.len() > 3 && t.starts_with("gpu") && t[3..].bytes().all(|b| b.is_ascii_digit()));
+        if !legal {
+            ok = false;
+            break;
+        }
+    }
+    if !ok {
+        let _ = w.config.set_s("shown_boxes", DEFAULT_BOXES.to_string());
+    }
+    ok
+}
+
+// ── boot_layout ─────────────────────────────────────────────────────────────
+
+/// Boot-time `Draw::calcSizes` (src/btop.cpp:1092) so the outline pre-print
+/// (`box_labels::print_box_outlines`, :1093-1097) sees real geometry before
+/// the first tick.
+///
+/// Builds the same [`btop_draw::boxes::LayoutInput`] the P3 tick uses
+/// (same field sources, same P3 defaults for the not-yet-configurable
+/// percents and GPU heights — kept in sync by inspection, cited below),
+/// writes `World::layout`, and clears `recalc_layout`. The tick re-runs it
+/// whenever `recalc_layout` is set, so boot calling it once is exactly the
+/// C++ order (calc → print outlines → loop).
+pub fn boot_layout(w: &mut World, term_w: i64, term_h: i64) {
+    use btop_draw::boxes::{calc_sizes, LayoutInput};
+    let shown_boxes = w
+        .config
+        .get_s("shown_boxes")
+        .unwrap_or("cpu mem net proc")
+        .to_string();
+    // Field sources mirror tick.rs (`LayoutInput` construction there):
+    // config percents fall back to the same P3 defaults (100/32/45/28/32)
+    // until the draw-config surface is plumbed.
+    let li = LayoutInput {
+        term_w,
+        term_h,
+        shown_boxes,
+        cpu_bottom: w.config.get_b("cpu_bottom").unwrap_or(false),
+        mem_below_net: w.config.get_b("mem_below_net").unwrap_or(false),
+        proc_left: w.config.get_b("proc_left").unwrap_or(false),
+        core_count: w.state.core_count as i64,
+        show_temp: true,
+        cpu_width_p: 100,
+        cpu_height_p: 32,
+        mem_width_p: 45,
+        net_height_p: 28,
+        show_disks: w.config.get_b("show_disks").unwrap_or(false),
+        swap_disk: w.config.get_b("swap_disk").unwrap_or(false),
+        mem_graphs: w.config.get_b("mem_graphs").unwrap_or(false),
+        has_swap: w.state.has_swap,
+        swap_upload_download: w.config.get_b("swap_upload_download").unwrap_or(false),
+        gpus_extra_height: 0,
+        gpu_total_height: 0,
+        gpu_panels: vec![],
+        gpu_height_p: 32,
+        gpu_min_height: 8,
+        gpu_min_width: 41,
+    };
+    let layout = calc_sizes(&li);
+    w.layout = layout.clone();
+    w.state.proc_geom.select_max = layout.proc.select_max;
+    w.recalc_layout = false;
+}

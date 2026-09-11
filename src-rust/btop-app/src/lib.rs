@@ -24,9 +24,8 @@ pub mod boot;
 /// src/btop.cpp:1093-1097 (outline print), :154-209 (min-size loop).
 pub mod box_labels;
 
-/// clean_quit(sig) sequence matching cpp:211-261 (T6). Placeholder.
-pub mod clean_quit {}
+/// clean_quit(sig) sequence matching cpp:211-261 (T7).
+pub mod clean_quit;
 
 /// Main loop: pselect + tick + Input::process + Menu::process (T7).
-/// Placeholder.
-pub mod main_loop {}
+pub mod main_loop;

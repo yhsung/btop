@@ -167,6 +167,44 @@ impl Config {
         self.locked = true;
     }
 
+    /// Persist the live maps to `path`, mirroring `Config::write` +
+    /// `current_config` (src/btop_config.cpp:836-844, :877-899): header
+    /// `#? Config file for btop v.<VERSION>`, then one `name = value` line
+    /// per key (`"quoted"` strings, lowercase `true`/`false` bools, plain
+    /// ints). Keys sort alphabetically (C++ iterates its `descriptions`
+    /// table order instead — DEVIATION: the port keeps no descriptions
+    /// table, so description comments are omitted and the order is sorted
+    /// rather than table order; `load` accepts either order). The caller
+    /// (P4 `clean_quit`) gates on `save_config_on_exit` and passes
+    /// `World::conf_file`; an empty path is a no-op error, mirroring the
+    /// `conf_file.empty()` early return (:837).
+    pub fn write(&self, path: &Path) -> Result<(), String> {
+        if path.as_os_str().is_empty() {
+            return Err("empty config path".to_string());
+        }
+        let mut out = format!("#? Config file for btop v.{}\n", crate::VERSION);
+        let mut names: Vec<&str> = self
+            .strings
+            .keys()
+            .chain(self.ints.keys())
+            .chain(self.bools.keys())
+            .map(String::as_str)
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        for name in names {
+            out.push('\n');
+            if let Some(v) = self.strings.get(name) {
+                out.push_str(&format!("{name} = \"{v}\"\n"));
+            } else if let Some(v) = self.ints.get(name) {
+                out.push_str(&format!("{name} = {v}\n"));
+            } else if let Some(v) = self.bools.get(name) {
+                out.push_str(&format!("{name} = {}\n", if *v { "true" } else { "false" }));
+            }
+        }
+        std::fs::write(path, out).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
     /// Unlock and flush staged tmp values into the live maps.
     /// Mirrors Config::unlock (src/btop_config.cpp:701-714).
     pub fn unlock(&mut self) {
@@ -482,6 +520,34 @@ mod tests {
         assert_eq!(c.get_s("shown_boxes"), Some("cpu net proc"));
         assert!(c.toggle_box("mem"));
         assert_eq!(c.get_s("shown_boxes"), Some("cpu net proc mem"));
+    }
+
+    #[test]
+    fn write_round_trips_through_load() {
+        // `write` header + `name = value` lines must re-parse via `load`
+        // with no warnings (P4 T7 `clean_quit` persistence).
+        let c = sample();
+        let dir = std::env::temp_dir().join("btop-t7-write-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("btop.conf");
+        c.write(&path).expect("write must succeed");
+        let text = std::fs::read_to_string(&path).expect("written file must read");
+        assert!(
+            text.starts_with("#? Config file for btop v.1.4.7\n"),
+            "{text:?}"
+        );
+        assert!(text.contains("color_theme = \"Default\"\n"), "{text:?}");
+        assert!(text.contains("update_ms = 2000\n"), "{text:?}");
+        // `load` only fills pre-registered keys (unknown keys warn,
+        // mirroring C++), so register the sample's keys first — key
+        // seeding itself lives in the runner `World`, not in `Config`.
+        let mut c2 = Config::new();
+        c2.strings.insert("color_theme".into(), String::new());
+        c2.bools.insert("theme_background".into(), false);
+        c2.ints.insert("update_ms".into(), 0);
+        assert!(c2.load(&path).is_empty(), "write output must load cleanly");
+        assert_eq!(c2.get_s("color_theme"), Some("Default"));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

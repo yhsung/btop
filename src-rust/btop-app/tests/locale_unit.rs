@@ -156,6 +156,19 @@ fn env_lang_utf8_is_adopted() {
 }
 
 #[test]
+fn env_last_utf8_hit_wins() {
+    // cpp:944-952 — every UTF-8 value is tried; the last one wins `found`.
+    let env = FakeEnv::new(&[
+        ("LANG", "en_US.UTF-8"),
+        ("LC_ALL", "sv_SE.UTF-8"),
+        ("LC_CTYPE", "C"),
+    ]);
+    let ops = MockOps::new().with_set("", Some("C"));
+    let (res, _) = hunt(&env, &ops, false, false);
+    assert_eq!(res.unwrap(), "sv_SE.UTF-8");
+}
+
+#[test]
 fn std_locale_split_piece_is_adopted() {
     // cpp:953-969 — no UTF-8 in env; std::locale("").name() composite
     // split on ';', first UTF-8 piece adopted (name after '=').

@@ -198,6 +198,10 @@ impl TermOps for MockOps {
 
 /// Singleton-facing wrapper: caches ops results in [`TermState`] so
 /// readers never touch fds.
+///
+/// NOTE (T2 ruling, carried): the plan text says `Box<dyn TermOps>`; the
+/// impl holds `Arc<dyn TermOps>` so the wrapper, tests, and T7's
+/// signal/main-loop owners share one ops object.
 pub struct TermWrapper {
     state: TermState,
     ops: Arc<dyn TermOps>,

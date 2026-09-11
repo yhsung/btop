@@ -252,8 +252,8 @@ impl LocaleOps for RealLocaleOps {
 /// `None` on any null (id pointer, backing CString ptr). Note
 /// `CFStringGetCStringPtr` can return null for non-contiguous strings;
 /// that degrades to the `en_US.UTF-8` fallback in [`hunt_locale`].
-/// UNVERIFIED on macOS hardware (Linux CI cannot compile this arm) —
-/// flagged in the T3 report.
+/// macOS arm verified: `cargo check -p btop-app` compiles this arm clean
+/// (T3's "UNVERIFIED" flag retired in T7).
 #[cfg(target_os = "macos")]
 fn macos_locale_id() -> Option<String> {
     use std::ffi::CStr;

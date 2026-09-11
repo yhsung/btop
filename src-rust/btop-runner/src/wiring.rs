@@ -72,7 +72,7 @@ pub struct SignalFlags {
     pub stopping: Arc<AtomicBool>,
     /// Exit in progress (`Global::quitting`, btop.cpp:119, set by
     /// `clean_quit` at :211-213). Written by the atexit hook
-    /// (`btop_app::signals::AtExitHook::run`); read by T6 `clean_quit`
+    /// (`btop_app::signals::AtExitHook::run`); read by T7 `clean_quit`
     /// as the re-entrancy guard.
     pub quitting: Arc<AtomicBool>,
 }
@@ -83,7 +83,7 @@ impl SignalFlags {
     }
 
     /// Clear the per-tick signal flags (main-loop drain + test helper).
-    /// `quitting` is deliberately EXCLUDED: it is the T6 `clean_quit`
+    /// `quitting` is deliberately EXCLUDED: it is the T7 `clean_quit`
     /// re-entrancy guard ("exit already in progress"), and draining it
     /// would let a second exit path re-enter cleanup. All stores use
     /// `Ordering::SeqCst`: the port is single-threaded, but SeqCst keeps

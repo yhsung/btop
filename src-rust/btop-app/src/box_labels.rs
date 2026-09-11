@@ -147,9 +147,9 @@ pub fn print_box_outlines(world: &World, out: &mut String) {
 
 // ── min_size_loop ───────────────────────────────────────────────────────────
 
-/// Outcome of [`min_size_loop`]. `q` does NOT call `clean_quit` here — that
-/// sequence is T7 territory (the `clean_quit` module is still a STUB); the
-/// caller (T7 `main`) maps [`MinSizeOutcome::QuitRequested`] to it.
+/// Outcome of [`min_size_loop`]. `q` does NOT call `clean_quit` here —
+/// that sequence is T7 territory (see [`crate::clean_quit`]); the caller
+/// (T7 `main` / `main_loop`) maps [`MinSizeOutcome::QuitRequested`] to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MinSizeOutcome {
     /// Terminal fits (or a re-check showed it fits): proceed to the loop.
@@ -236,7 +236,15 @@ const ALL_BOXES: &[&str] = &[
 /// Digit legality gate (src/btop_input.cpp:243): index 0 needs 5+ GPUs,
 /// index ≥ 5 needs `intKey - 4 <= Gpu::count`. Mirrors
 /// `sink::toggle_box_legal` (same transcription; that helper is private to
-/// the sink, so the rule is repeated here rather than reached through).
+/// the sink, so the rule is repeated here rather than reached through —
+/// T7 unification note: either make the sink helper `pub(crate)` visible to
+/// `btop-app` or move the table+gate into `btop-config` next to
+/// `toggle_box`; until then the two copies are kept in sync by inspection).
+///
+/// `Input::interrupt` ownership (cpp:207 loop-tail note): C++ wakes the
+/// blocked `Input::poll` so the toggle path re-renders promptly. The port
+/// needs no equivalent — our `InputPoll::poll(10)` times out on its own
+/// and the loop re-checks, so there is no sleeper to interrupt.
 fn box_toggle_legal(index: usize, gpu_count: u32) -> bool {
     let n = index as i64;
     if index >= ALL_BOXES.len() {

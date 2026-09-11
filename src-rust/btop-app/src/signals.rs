@@ -477,13 +477,17 @@ pub fn on_crash(env: &dyn CrashEnv, sig: c_int) {
 // ── atexit ────────────────────────────────────────────────────────────────
 
 /// Exit hook payload: the atexit body (`_exit_handler` → `clean_quit(-1)`
-/// at btop.cpp:276-278) reduced to what T4 owns — restore the term and
-/// mark `quitting` so a second exit path becomes a no-op. T6's
-/// `clean_quit` subsumes this once it lands.
+/// at btop.cpp:276-278) reduced to what can run without `World` — restore
+/// the term and mark `quitting` so a second exit path becomes a no-op. The
+/// T7 `clean_quit` (World-owned: config write, error message, runtime
+/// print) runs on the main exit path; this hook only covers abnormal exits
+/// (panics) where `World` is already gone.
 ///
-/// STUB: do not wire [`RealAtExit`] to real `atexit` at boot until T6
-/// `clean_quit` lands — this only restores the term and flips `quitting`,
-/// it is not the full `clean_quit(-1)` shutdown.
+/// Wired to real `atexit` by T7 `fn main` (via [`RealAtExit`]) — the T4
+/// "do not wire until clean_quit lands" gate is lifted: every normal exit
+/// goes through the real `clean_quit`, and this fallback can only
+/// under-clean (never double-clean: `clean_quit`'s `quitting` guard makes
+/// the main path idempotent).
 pub struct AtExitHook {
     flags: Arc<SignalFlags>,
     term: Arc<TermWrapper>,
@@ -495,8 +499,9 @@ impl AtExitHook {
     }
 
     pub fn run(self) {
-        // STUB (see struct docs): term restore + `quitting` only — not the
-        // full T6 `clean_quit(-1)` shutdown.
+        // Atexit fallback (see struct docs): term restore + `quitting`
+        // only — the World-owned T7 `clean_quit(-1)` steps run on the main
+        // exit path, not here.
         if self.term.is_initialized() {
             self.term.restore();
         }

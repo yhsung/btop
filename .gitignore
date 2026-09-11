@@ -50,7 +50,7 @@ stage/
 btop.1
 
 build
-bin
+/bin
 btop
 /obj/
 config.h
