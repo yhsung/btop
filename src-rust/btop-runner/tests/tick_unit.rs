@@ -91,6 +91,9 @@ fn fake_backend() -> ReplayBackend {
         user: "u".to_string(),
         cmd: "/bin/p --flag".to_string(),
         p_nice: 0,
+        ppid: 0,
+        cpu_s: 0,
+        cpu_c: 0.0,
     }]);
     b
 }

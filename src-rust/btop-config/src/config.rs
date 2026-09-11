@@ -210,6 +210,11 @@ impl Config {
         config.bools.insert("theme_background".into(), true);
         config.bools.insert("vim_keys".into(), false);
         config.bools.insert("proc_filtering".into(), false);
+        // Collapse-all channel (no C++ config key — `Proc::collapse_all`
+        // member instead; the port routes input→tick through Config like
+        // the `proc_*_pid` channels. Absent from DEFAULT_ORDER on purpose:
+        // never dumped, like the pid channels).
+        config.bools.insert("proc_collapse_all".into(), false);
         config.bools.insert("proc_tree".into(), false);
         config.bools.insert("pause_proc_list".into(), false);
         config.bools.insert("follow_process".into(), false);

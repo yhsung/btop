@@ -60,6 +60,10 @@ run_case update-plus "" +
 check "update-plus survives" "¹cpu" "$OUT/update-plus.txt"
 run_case sort-m "" m
 check "sort mode cycles" "←" "$OUT/sort-m.txt"
+run_case tree-e "" e
+check "tree toggle" "[-]─1" "$OUT/tree-e.txt"
+run_case tree-collapse "" e E
+check "tree collapse-all" "[+]─" "$OUT/tree-collapse.txt"
 
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

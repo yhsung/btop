@@ -14,6 +14,9 @@ pub struct RealBackend {
     /// cmd and user are fetched ONLY for unseen pids (`no_cache`), then
     /// reused; entries for vanished pids are pruned each round.
     proc_meta: std::collections::HashMap<u64, ProcMeta>,
+    /// Cached mach-tick → nanosecond factor (`Shared::machTck`,
+    /// osx/btop_collect.cpp:681); `None` until first `proc_list`.
+    mach_tck: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -28,6 +31,7 @@ impl RealBackend {
         Self {
             gpu: None,
             proc_meta: std::collections::HashMap::new(),
+            mach_tck: None,
         }
     }
 }
@@ -39,6 +43,11 @@ impl RealBackend {
 // CoreFoundation + IOKit links below belong to the M2h IOHID thermal path.
 #[link(name = "System", kind = "dylib")]
 extern "C" {
+    // mach/mach_time.h:36-44: `struct mach_timebase_info { uint32_t
+    // numer, denom; }`, `kern_return_t mach_timebase_info(info)`.
+    // Converts mach-absolute ticks to nanoseconds (nanos = ticks *
+    // numer / denom); backs `Shared::machTck` (osx/btop_collect.cpp:681).
+    fn mach_timebase_info(info: *mut [u32; 2]) -> i32;
     // mach/mach_init.h:74 `extern mach_port_t mach_host_self(void);`
     fn mach_host_self() -> u32;
     // mach/mach_init.h:80-81: mach_task_self() is a macro for the
@@ -328,6 +337,10 @@ fn read_u64(buf: &[u8], off: usize) -> u64 {
 
 fn read_i32(buf: &[u8], off: usize) -> i32 {
     i32::from_ne_bytes(buf[off..off + 4].try_into().unwrap_or([0; 4]))
+}
+
+fn read_i64(buf: &[u8], off: usize) -> i64 {
+    i64::from_ne_bytes(buf[off..off + 8].try_into().unwrap_or([0; 8]))
 }
 
 fn basename_of(path: &[u8]) -> String {
@@ -1417,6 +1430,41 @@ impl MacOsBackend for RealBackend {
             }
             // p_nice i8@242 refreshes every tick (C++ :1863).
             let nice = chunk[242] as i8 as i64;
+            // Parent pid i32@560 (`kp_eproc.e_ppid`, C++ :1861); negative
+            // (kernel) normalizes to 0, matching the orphan rule the tree
+            // builder applies (shared.cpp: orphan ppid=0).
+            let ppid = read_i32(chunk, 560).max(0) as u64;
+            // Start time (`p_un.__p_starttime`, sys/proc.h:97-101:
+            // tv_sec i64@0 + tv_usec i32@8) in wall micros (:1862).
+            let cpu_s = (read_i64(chunk, 0).max(0) as u64)
+                .saturating_mul(1_000_000)
+                .saturating_add(read_i32(chunk, 8).max(0) as u64);
+            // Cumulative cpu since start (:1892). machTck converts
+            // mach-absolute ticks to nanos (:681); wall now is
+            // gettimeofday-equivalent (`time_micros`, :1792).
+            let tck = *self.mach_tck.get_or_insert_with(|| {
+                let mut tb = [0u32; 2];
+                let ok = unsafe { mach_timebase_info(&mut tb) } == 0 && tb[1] != 0;
+                // Integer division, mirroring C++ (`convf.numer /
+                // convf.denom` on two uint32, :681-682) wart and all.
+                if ok {
+                    (tb[0] / tb[1]) as f64
+                } else {
+                    100.0
+                }
+            });
+            let now_micros = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_micros().min(u64::MAX as u128) as u64)
+                .unwrap_or(0);
+            let cpu_c = match now_micros.saturating_sub(cpu_s) {
+                // C++ (:1892) omits the `/1000`: ticks→nanos over
+                // lived-micros is a per-mille-scale ratio. The port
+                // normalizes to a plain fraction (same order — the only
+                // consumer is the "cpu direct" sort).
+                0 => 0.0,
+                lived => (ticks as f64 * tck) / (lived as f64 * 1_000.0),
+            };
             let meta = &self.proc_meta[&pid_u];
             out.push(ProcRaw {
                 pid: pid_u,
@@ -1427,6 +1475,9 @@ impl MacOsBackend for RealBackend {
                 user: meta.user.clone(),
                 cmd: meta.cmd.clone(),
                 p_nice: nice,
+                ppid,
+                cpu_s,
+                cpu_c,
             });
         }
         // Prune dead pids (C++ :1904-1905 remove_if, non-paused path).
@@ -1518,6 +1569,25 @@ mod tests {
     fn basename_strips_dirs_and_nuls() {
         assert_eq!(basename_of(b"/usr/local/bin/btop\0\0"), "btop");
         assert_eq!(basename_of(b"launchd"), "launchd");
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn proc_list_carries_ppid_and_start() {
+        // Live smoke (degrade-tolerant: asserts the call shape, not
+        // hardware): pid 1 exists with ppid 0, a sane start time, and a
+        // non-negative cumulative cpu.
+        let mut b = RealBackend::new();
+        let procs = match MacOsBackend::proc_list(&mut b) {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        assert!(!procs.is_empty());
+        let init = procs.iter().find(|p| p.pid == 1).expect("pid 1");
+        assert_eq!(init.ppid, 0);
+        assert!(init.cpu_s > 0, "cpu_s={}", init.cpu_s);
+        assert!(init.cpu_c >= 0.0);
+        assert!(procs.iter().any(|p| p.ppid != 0), "no child found");
     }
 
     // M2h(a) selection helpers over (Product, temp) entries.

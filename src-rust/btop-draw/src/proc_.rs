@@ -83,7 +83,17 @@ pub struct ProcInfo {
     pub user: String,
     pub mem: u64, // bytes
     pub cpu_p: f64,
+    pub cpu_c: f64,
     pub p_nice: i64,
+    pub ppid: u64,
+    /// Tree depth from `_tree_gen` (0 for roots / filter-surfaced rows).
+    pub depth: usize,
+    /// Collapsed by the user (`space`/`+/-`/`C`, `toggle_tree_collapse`).
+    /// Persisted across ticks via the previous view; drives `[-]`/`[+]`.
+    pub collapsed: bool,
+    /// Filtered out or inside a collapsed subtree (`_tree_gen`); hidden
+    /// via the `tree_index == len` sentinel (see `is_hidden`).
+    pub filtered: bool,
     /// Tree prefix built collect-side (`_tree_gen`); empty in list mode.
     pub prefix: String,
     /// Collect-side tree order; `== procs.len()` hides the row in tree
@@ -229,11 +239,13 @@ pub fn matches_filter(p: &ProcInfo, filter: &str) -> bool {
 }
 
 /// Row hidden from the list (`:1746` follow-scan skip + `:2049` row skip).
-/// In tree mode filtering is collect-side (`_tree_gen`); here only the
-/// `tree_index` sentinel hides rows.
+/// In tree mode filtering is collect-side (`_tree_gen`); rows hide via
+/// the `filtered` flag OR the `tree_index` sentinel (both arms mirror
+/// `:2049` — the sentinel alone is not sufficient: collapsed/filtered
+/// descendants can carry small indices from the `tree_sort` quirk).
 fn is_hidden(p: &ProcInfo, filter: Option<&str>, tree: bool, list_len: usize) -> bool {
     if tree {
-        return p.tree_index == list_len;
+        return p.filtered || p.tree_index == list_len;
     }
     match filter {
         Some(f) if !f.is_empty() => !matches_filter(p, f),

@@ -25,7 +25,7 @@ use btop_draw::proc_::{matches_filter, ProcDetail, ProcDrawInput, ProcFlags, Pro
 use btop_tools::mouse::MouseMap;
 use std::cmp::Ordering;
 use std::cmp::Reverse;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
@@ -226,6 +226,9 @@ pub struct AppState {
     pub proc_sorting: String,
     pub proc_reversed: bool,
     pub proc_tree: bool,
+    /// Previous tick's `proc_tree` — tree-mode entry edge for
+    /// `_auto_collapse_oversized` (shared.cpp: `tree_mode_change`).
+    pub proc_tree_prev: bool,
     pub proc_filter: String,
     pub proc_selected: i64,
     pub proc_start: i64,
@@ -341,6 +344,7 @@ impl Default for AppState {
             proc_sorting: "cpu lazy".to_string(), // btop_config.cpp:284
             proc_reversed: false,
             proc_tree: false,
+            proc_tree_prev: false,
             proc_filter: String::new(),
             proc_selected: 0,
             proc_start: 0,
@@ -934,12 +938,396 @@ pub fn assemble_gpu<'a>(
     }
 }
 
-pub fn assemble_proc(
-    state: &mut AppState,
+/// Pending tree operations for one tick, mirroring the `Proc::` members
+/// the tree pipeline consumes (`collapse`/`expand`/`toggle_children`/
+/// `collapse_all`, osx/btop_collect.cpp:1968-2006) plus the two config
+/// values it reads (`proc_tree_auto_collapse`, `proc_aggregate`). The
+/// caller (tick) builds this from Config and resets the Config channel
+/// after the call — the equivalent of C++ resetting the members to `-1`.
+#[derive(Debug, Clone, Copy)]
+pub struct TreeOps {
+    pub expand_pid: i64,
+    pub collapse_pid: i64,
+    pub toggle_children_pid: i64,
+    pub collapse_all: bool,
+    pub auto_collapse: i64,
+    pub aggregate: bool,
+}
+
+impl Default for TreeOps {
+    fn default() -> Self {
+        Self {
+            expand_pid: -1,
+            collapse_pid: -1,
+            toggle_children_pid: -1,
+            collapse_all: false,
+            auto_collapse: 0,
+            aggregate: false,
+        }
+    }
+}
+
+/// `Proc::sort_vector` index (src/btop_shared.cpp:337-346). `None` =
+/// unknown key: C++ `v_index` returns the vector size and the `switch`
+/// sorts nothing.
+fn proc_sort_index(sorting: &str) -> Option<usize> {
+    [
+        "pid",
+        "name",
+        "command",
+        "threads",
+        "user",
+        "memory",
+        "cpu direct",
+        "cpu lazy",
+    ]
+    .iter()
+    .position(|s| *s == sorting)
+}
+
+/// `Proc::proc_sorter` (src/btop_shared.cpp:104-146): stable flat sort
+/// with per-direction comparators (NOT a final `reverse()` — tie order
+/// is preserved), plus the "cpu lazy" front-bump for hot processes when
+/// flat, unreversed, and lazily sorted.
+fn proc_sorter(ordered: &mut [ProcInfo], sorting: &str, reverse: bool, tree: bool) {
+    let idx = match proc_sort_index(sorting) {
+        Some(i) => i,
+        None => return,
+    };
+    if reverse {
+        match idx {
+            0 => ordered.sort_by_key(|p| p.pid),
+            1 => ordered.sort_by(|a, b| b.name.cmp(&a.name)),
+            2 => ordered.sort_by(|a, b| b.cmd.cmp(&a.cmd)),
+            3 => ordered.sort_by_key(|p| p.threads),
+            4 => ordered.sort_by(|a, b| b.user.cmp(&a.user)),
+            5 => ordered.sort_by(|a, b| a.mem.partial_cmp(&b.mem).unwrap_or(Ordering::Equal)),
+            6 => ordered.sort_by(|a, b| a.cpu_p.partial_cmp(&b.cpu_p).unwrap_or(Ordering::Equal)),
+            7 => ordered.sort_by(|a, b| a.cpu_c.partial_cmp(&b.cpu_c).unwrap_or(Ordering::Equal)),
+            _ => {}
+        }
+    } else {
+        match idx {
+            0 => ordered.sort_by_key(|p| Reverse(p.pid)),
+            1 => ordered.sort_by(|a, b| a.name.cmp(&b.name)),
+            2 => ordered.sort_by(|a, b| a.cmd.cmp(&b.cmd)),
+            3 => ordered.sort_by_key(|p| Reverse(p.threads)),
+            4 => ordered.sort_by(|a, b| a.user.cmp(&b.user)),
+            5 => ordered.sort_by(|a, b| b.mem.partial_cmp(&a.mem).unwrap_or(Ordering::Equal)),
+            6 => ordered.sort_by(|a, b| b.cpu_p.partial_cmp(&a.cpu_p).unwrap_or(Ordering::Equal)),
+            7 => ordered.sort_by(|a, b| b.cpu_c.partial_cmp(&a.cpu_c).unwrap_or(Ordering::Equal)),
+            _ => {}
+        }
+    }
+    if !tree && !reverse && sorting == "cpu lazy" {
+        let mut max = 10.0;
+        let mut target = 30.0;
+        let mut x = 0;
+        let mut offset = 0;
+        let mut i = 0;
+        while i < ordered.len() {
+            if i <= 5 && ordered[i].cpu_p > max {
+                max = ordered[i].cpu_p;
+            } else if i == 6 {
+                target = if max > 30.0 { max } else { 10.0 };
+            }
+            if i == offset && ordered[i].cpu_p > 30.0 {
+                offset += 1;
+            } else if ordered[i].cpu_p > target {
+                ordered[offset..=i].rotate_right(1);
+                x += 1;
+                if x > 10 {
+                    break;
+                }
+            }
+            i += 1;
+        }
+    }
+}
+
+/// `toggle_tree_collapse` (src/btop_shared.cpp:274-292): collapse every
+/// non-root process if any expanded non-root parent exists, else expand
+/// them all. Roots (ppid absent from the pid set) are never touched.
+fn toggle_tree_collapse(procs: &mut [ProcInfo]) {
+    let pids: HashSet<u64> = procs.iter().map(|p| p.pid).collect();
+    let ppids: HashSet<u64> = procs.iter().map(|p| p.ppid).collect();
+    let do_collapse = procs
+        .iter()
+        .any(|p| ppids.contains(&p.pid) && pids.contains(&p.ppid) && !p.collapsed);
+    for p in procs.iter_mut() {
+        if !pids.contains(&p.ppid) {
+            continue;
+        }
+        p.collapsed = do_collapse;
+    }
+}
+
+/// `_auto_collapse_oversized` (src/btop_shared.cpp:294-310): on entering
+/// tree mode, collapse busy parents at depth ≥ 2 when the threshold
+/// (`proc_tree_auto_collapse`) is positive.
+fn auto_collapse_oversized(procs: &mut [ProcInfo], threshold: i64) {
+    if threshold <= 0 || procs.is_empty() {
+        return;
+    }
+    let root_ppid = procs[0].ppid;
+    let root_pids: HashSet<u64> = procs
+        .iter()
+        .filter(|p| p.ppid == root_ppid)
+        .map(|p| p.pid)
+        .collect();
+    for i in 0..procs.len() {
+        let ppid = procs[i].ppid;
+        if ppid == root_ppid || root_pids.contains(&ppid) {
+            continue;
+        }
+        let pid = procs[i].pid;
+        if procs.iter().filter(|p| p.ppid == pid).count() as i64 >= threshold {
+            procs[i].collapsed = true;
+        }
+    }
+}
+
+/// One `_tree_gen` node (src/btop_shared.cpp:429-432 `tree_proc`):
+/// index into the ppid-sorted vec plus nested children.
+struct TreeNode {
+    idx: usize,
+    children: Vec<TreeNode>,
+}
+
+/// `_tree_gen` (src/btop_shared.cpp:196-259): depth-first walk assigning
+/// `depth`, the `short_cmd` basename rule, and the collapsed/aggregate
+/// resource rollups. `tree_index` visibility placeholders go in here;
+/// final indices come from `tree_sort` below.
+///
+/// DEVIATION: the `p.state != 'X'` gate is dropped — the port carries no
+/// process state, and zombies/denied entries already contribute zeros.
+#[allow(clippy::too_many_arguments)]
+fn tree_gen(
+    procs: &mut Vec<ProcInfo>,
+    children: &HashMap<u64, Vec<usize>>,
+    cur: usize,
+    depth: usize,
+    collapsed: bool,
+    filter: &str,
+    found: bool,
+    no_update: bool,
+    should_filter: bool,
+    filter_found: &mut i64,
+    aggregate: bool,
+) -> TreeNode {
+    let mut node = TreeNode {
+        idx: cur,
+        children: Vec::new(),
+    };
+    let mut filtering = false;
+    let mut found = found;
+    let mut cur_depth = depth;
+    //? If filtering, include children of matching processes.
+    if !found && (should_filter || !filter.is_empty()) {
+        if !matches_filter(&procs[cur], filter) {
+            filtering = true;
+            procs[cur].filtered = true;
+            *filter_found += 1;
+        } else {
+            found = true;
+            cur_depth = 0;
+        }
+    } else if procs[cur].filtered {
+        procs[cur].filtered = false;
+    }
+    procs[cur].depth = cur_depth;
+    //? Set tree index position for process if not filtered out or currently
+    //? in a collapsed sub-tree (final indices from tree_sort; the hidden
+    //? sentinel for the other branch).
+    if !collapsed && !filtering {
+        procs[cur].tree_index = usize::MAX;
+        //? Binary basename appended to the program name if not the same
+        //? (drawn parenthesized; draw suppresses `short_cmd == name`).
+        if procs[cur].short_cmd.is_empty() && !procs[cur].cmd.is_empty() {
+            let first = procs[cur].cmd.split(' ').next().unwrap_or("");
+            let base = first.rsplit('/').next().unwrap_or("");
+            procs[cur].short_cmd = base.to_string();
+        }
+    } else {
+        procs[cur].tree_index = procs.len();
+    }
+    //? Recursive iteration over all children.
+    let pid = procs[cur].pid;
+    let cur_collapsed = procs[cur].collapsed;
+    if let Some(kids) = children.get(&pid).cloned() {
+        for kid in kids {
+            if collapsed && !filtering {
+                procs[cur].filtered = true;
+            }
+            let child = tree_gen(
+                procs,
+                children,
+                kid,
+                cur_depth + 1,
+                collapsed || cur_collapsed,
+                filter,
+                found,
+                no_update,
+                should_filter,
+                filter_found,
+                aggregate,
+            );
+            if !no_update && !filtering && (collapsed || cur_collapsed) {
+                procs[cur].cpu_p += procs[kid].cpu_p;
+                procs[cur].cpu_c += procs[kid].cpu_c;
+                procs[cur].mem += procs[kid].mem;
+                procs[cur].threads += procs[kid].threads;
+                *filter_found += 1;
+                procs[kid].filtered = true;
+            } else if aggregate {
+                procs[cur].cpu_p += procs[kid].cpu_p;
+                procs[cur].cpu_c += procs[kid].cpu_c;
+                procs[cur].mem += procs[kid].mem;
+                procs[cur].threads += procs[kid].threads;
+            }
+            node.children.push(child);
+        }
+    }
+    node
+}
+
+/// `tree_sort` (src/btop_shared.cpp:148-173): sort SIBLINGS only (by
+/// threads/mem/cpu_p/cpu_c — other keys keep the flat-sort order), then
+/// assign `tree_index` (or the `index_max` hidden sentinel under a
+/// collapsed/filtered ancestor).
+///
+/// DEVIATION: the `paused` freeze is not ported — a paused tree still
+/// re-sorts siblings from the fresh raws (same row set, only intra-tick
+/// sibling order may reshuffle while paused; C++ freezes it).
+fn tree_sort(
+    procs: &mut Vec<ProcInfo>,
+    nodes: &mut [TreeNode],
+    sorting: &str,
+    reverse: bool,
+    next: &mut usize,
+    index_max: usize,
+    collapsed: bool,
+) {
+    if nodes.len() > 1 {
+        let idx = proc_sort_index(sorting);
+        if reverse {
+            match idx {
+                Some(3) => nodes.sort_by_key(|n| procs[n.idx].threads),
+                Some(5) => nodes.sort_by(|a, b| {
+                    procs[a.idx]
+                        .mem
+                        .partial_cmp(&procs[b.idx].mem)
+                        .unwrap_or(Ordering::Equal)
+                }),
+                Some(6) => nodes.sort_by(|a, b| {
+                    procs[a.idx]
+                        .cpu_p
+                        .partial_cmp(&procs[b.idx].cpu_p)
+                        .unwrap_or(Ordering::Equal)
+                }),
+                Some(7) => nodes.sort_by(|a, b| {
+                    procs[a.idx]
+                        .cpu_c
+                        .partial_cmp(&procs[b.idx].cpu_c)
+                        .unwrap_or(Ordering::Equal)
+                }),
+                _ => {}
+            }
+        } else {
+            match idx {
+                Some(3) => nodes.sort_by_key(|n| Reverse(procs[n.idx].threads)),
+                Some(5) => nodes.sort_by(|a, b| {
+                    procs[b.idx]
+                        .mem
+                        .partial_cmp(&procs[a.idx].mem)
+                        .unwrap_or(Ordering::Equal)
+                }),
+                Some(6) => nodes.sort_by(|a, b| {
+                    procs[b.idx]
+                        .cpu_p
+                        .partial_cmp(&procs[a.idx].cpu_p)
+                        .unwrap_or(Ordering::Equal)
+                }),
+                Some(7) => nodes.sort_by(|a, b| {
+                    procs[b.idx]
+                        .cpu_c
+                        .partial_cmp(&procs[a.idx].cpu_c)
+                        .unwrap_or(Ordering::Equal)
+                }),
+                _ => {}
+            }
+        }
+    }
+    for node in nodes.iter_mut() {
+        let i = node.idx;
+        procs[i].tree_index = if collapsed || procs[i].filtered {
+            index_max
+        } else {
+            let t = *next;
+            *next += 1;
+            t
+        };
+        if !node.children.is_empty() {
+            // LITERAL upstream quirk (shared.cpp:171): the bool expr binds
+            // to `index_max` and `collapsed` falls back to its `= false`
+            // default — hidden descendants get 0/1, not `len`. Harmless:
+            // draw hides via `filtered` regardless (btop_draw.cpp:2049),
+            // and the counter only feeds visible rows.
+            let child_max =
+                usize::from(collapsed || procs[i].collapsed || procs[i].tree_index == index_max);
+            tree_sort(
+                procs,
+                &mut node.children,
+                sorting,
+                reverse,
+                next,
+                child_max,
+                false,
+            );
+        }
+    }
+}
+
+/// `_collect_prefixes` (src/btop_shared.cpp:261-272): recursive ASCII
+/// tree prefixes (`[-]─`/`[+]─` parents, `├─`/`└─` leaves, `│` guides).
+/// Filtered subtrees render at depth 0 (guides suppressed below them).
+fn collect_prefixes(procs: &mut Vec<ProcInfo>, node: &TreeNode, is_last: bool, header: &str) {
+    let i = node.idx;
+    let is_filtered = procs[i].filtered;
+    if is_filtered {
+        procs[i].depth = 0;
+    }
+    if !node.children.is_empty() {
+        procs[i].prefix = format!(
+            "{header}{}",
+            if procs[i].collapsed {
+                "[+]─"
+            } else {
+                "[-]─"
+            }
+        );
+    } else {
+        procs[i].prefix = format!("{header}{}", if is_last { " └─" } else { " ├─" });
+    }
+    let last = node.children.len().saturating_sub(1);
+    for (k, child) in node.children.iter().enumerate() {
+        let child_header = if is_filtered {
+            String::new()
+        } else {
+            format!("{header}{}", if is_last { "   " } else { " │ " })
+        };
+        collect_prefixes(procs, child, k == last, &child_header);
+    }
+}
+
+pub fn assemble_proc<'a>(
+    state: &'a mut AppState,
     raws: Vec<ProcRaw>,
     delta_total: u64,
     width: usize,
-) -> ProcDrawInput<'_> {
+    ops: &TreeOps,
+    select_max: i64,
+) -> ProcDrawInput<'a> {
     // `cmult` feeds per-PROC cpu% (cpp:1758 `per_core ? coreCount : 1`) —
     // deliberately computed HERE, not in assemble_cpu.
     let cmult = if state.per_core {
@@ -949,6 +1337,28 @@ pub fn assemble_proc(
     };
     let ncore = state.core_count;
     let factor = state.tick_factor;
+    // Selected pid BEFORE the rebuild (visible-row indexing, mirroring
+    // the draw row loop) for post-collapse `locate_selection`.
+    let selected_pid = if state.proc_selected > 0 {
+        let tree = state.proc_tree;
+        let len = state.proc_view.len();
+        state
+            .proc_view
+            .iter()
+            .filter(|p| !(tree && p.tree_index == len))
+            .skip(state.proc_start.max(0) as usize)
+            .nth((state.proc_selected - 1).max(0) as usize)
+            .map(|p| p.pid)
+    } else {
+        None
+    };
+    // Collapse flags persist across ticks on the previous view (C++
+    // keeps them on `current_procs`); fresh pids start expanded.
+    let prev_collapsed: HashMap<u64, bool> = state
+        .proc_view
+        .iter()
+        .map(|p| (p.pid, p.collapsed))
+        .collect();
     let mut ordered: Vec<ProcInfo> = Vec::with_capacity(raws.len());
     for raw in &raws {
         // First sighting seeds the baseline (delta 0 → cpu 0); the delta
@@ -965,40 +1375,191 @@ pub fn assemble_proc(
             pid: raw.pid,
             name: raw.name.clone(),
             // Full command line + owner from the OS (collected per pid,
-            // cached collect-side); short_cmd stays the display name.
+            // cached collect-side); `short_cmd` fills in tree mode via
+            // the `_tree_gen` basename rule (empty in list mode — draw
+            // only reads it for the narrow tree parenthetical).
             cmd: raw.cmd.clone(),
-            short_cmd: raw.name.clone(),
+            short_cmd: String::new(),
             threads: raw.threads,
             user: raw.user.clone(),
             mem: raw.mem_bytes,
             cpu_p,
+            cpu_c: raw.cpu_c,
             p_nice: raw.p_nice,
+            ppid: raw.ppid,
+            depth: 0,
+            collapsed: prev_collapsed.get(&raw.pid).copied().unwrap_or(false),
+            filtered: false,
             prefix: String::new(),
             tree_index: 0,
         });
     }
     state.procs = raws;
-    // Minimal headless sort-key set ("cpu lazy" default contains "cpu").
-    // P4/live may pre-sort richer C++ keys; the match arms stay prefix-free
-    // on purpose (unknown keys fall back to pid, never panic).
-    match state.proc_sorting.as_str() {
-        s if s.contains("cpu") => {
-            ordered.sort_by(|a, b| b.cpu_p.partial_cmp(&a.cpu_p).unwrap_or(Ordering::Equal))
+    // `proc_sorter` (shared.cpp:104-146) runs in both modes; the tree
+    // pipeline below re-sorts by ppid stably, preserving sibling order.
+    let sorting = state.proc_sorting.clone();
+    let reverse = state.proc_reversed;
+    let tree_mode = state.proc_tree;
+    proc_sorter(&mut ordered, &sorting, reverse, tree_mode);
+    // Tree pipeline (osx/btop_collect.cpp:1967-2044). Flat mode keeps the
+    // sorter output with positional indices.
+    let mut filter_found: i64 = 0;
+    // `locate_selection` (osx:2041-2044): set when a collapse op lands on
+    // a real pid while a row is selected; applied after the rebuild.
+    let mut locate_selection = false;
+    if tree_mode && !ordered.is_empty() {
+        let no_update = state.proc_flags.pause_proc_list;
+        let should_filter = state.proc_flags.filtering;
+        // Consume pending collapse inputs (C++ resets the members to -1
+        // right after; the caller resets the Config channel).
+        if ops.toggle_children_pid != -1 {
+            if let Some(pos) = ordered
+                .iter()
+                .position(|p| p.pid as i64 == ops.toggle_children_pid)
+            {
+                let parent = ordered[pos].pid;
+                for p in ordered.iter_mut() {
+                    if p.ppid == parent {
+                        p.collapsed = !p.collapsed;
+                    }
+                }
+                if state.proc_selected > 0 {
+                    locate_selection = true;
+                }
+            }
         }
-        s if s.contains("mem") => ordered.sort_by_key(|a| Reverse(a.mem)),
-        s if s.contains("program") || s.contains("name") => {
-            ordered.sort_by(|a, b| a.name.cmp(&b.name))
+        // `collapse` and `expand` share one pid: equal values toggle
+        // (osx:1985-1998).
+        let find_pid = if ops.collapse_pid != -1 {
+            ops.collapse_pid
+        } else {
+            ops.expand_pid
+        };
+        if find_pid != -1 {
+            if let Some(p) = ordered.iter_mut().find(|p| p.pid as i64 == find_pid) {
+                // Equal pids toggle (osx:1985-1987); otherwise the present
+                // channel wins.
+                p.collapsed = if ops.collapse_pid == ops.expand_pid {
+                    !p.collapsed
+                } else {
+                    ops.collapse_pid > -1
+                };
+                if state.proc_selected > 0 {
+                    locate_selection = true;
+                }
+            }
         }
-        _ => ordered.sort_by_key(|a| a.pid),
+        if ops.collapse_all {
+            toggle_tree_collapse(&mut ordered);
+            if state.proc_selected > 0 {
+                locate_selection = true;
+            }
+        }
+        // Orphan adoption: unknown parents become roots (`ppid = 0`).
+        if !no_update {
+            let found: HashSet<u64> = ordered.iter().map(|p| p.pid).collect();
+            for p in ordered.iter_mut() {
+                if !found.contains(&p.ppid) {
+                    p.ppid = 0;
+                }
+            }
+        }
+        //? Stable sort to retain selected sorting among same-parent procs.
+        ordered.sort_by_key(|p| p.ppid);
+        //? Auto-collapse on entering tree mode.
+        let tree_mode_change = tree_mode && !state.proc_tree_prev;
+        auto_collapse_oversized(
+            &mut ordered,
+            if tree_mode_change {
+                ops.auto_collapse
+            } else {
+                0
+            },
+        );
+        // Child index by pid in vec order (= `equal_range` sequence).
+        let mut children: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (i, p) in ordered.iter().enumerate() {
+            children.entry(p.ppid).or_default().push(i);
+        }
+        //? Start recursive iteration over processes with the lowest shared
+        //? parent pids (the first ppid group after the stable sort).
+        let root_ppid = ordered[0].ppid;
+        let mut forest: Vec<TreeNode> = Vec::new();
+        if let Some(idxs) = children.get(&root_ppid).cloned() {
+            let filter = state.proc_filter.clone();
+            for idx in idxs {
+                forest.push(tree_gen(
+                    &mut ordered,
+                    &children,
+                    idx,
+                    0,
+                    false,
+                    &filter,
+                    false,
+                    no_update,
+                    should_filter,
+                    &mut filter_found,
+                    ops.aggregate,
+                ));
+            }
+        }
+        //? Recursive sort over tree structure.
+        let index_max = ordered.len();
+        let mut next = 0usize;
+        tree_sort(
+            &mut ordered,
+            &mut forest,
+            &sorting,
+            reverse,
+            &mut next,
+            index_max,
+            false,
+        );
+        // Defensive: nodes unreachable from the roots (ppid cycles —
+        // impossible from a real sysctl walk) keep the `usize::MAX`
+        // placeholder; hide them instead of rendering prefix-less.
+        for p in ordered.iter_mut() {
+            if p.tree_index == usize::MAX {
+                p.tree_index = index_max;
+            }
+        }
+        //? Recursive construction of ASCII tree prefixes.
+        let last = forest.len().saturating_sub(1);
+        for (k, root) in forest.iter().enumerate() {
+            collect_prefixes(&mut ordered, root, k == last, "");
+        }
+        //? Final sort based on tree index.
+        ordered.sort_by_key(|p| p.tree_index);
+    } else {
+        for (i, p) in ordered.iter_mut().enumerate() {
+            // Flat mode: positional indices; tree mode assigns real ones
+            // (or the hidden sentinel) above.
+            p.tree_index = i;
+        }
     }
-    if state.proc_reversed {
-        ordered.reverse();
-    }
-    let numpids = ordered.len() as i64;
-    for (i, p) in ordered.iter_mut().enumerate() {
-        // All visible headlessly; P4/live assigns the `== len` hidden
-        // sentinel from its ppid walk in tree mode.
-        p.tree_index = i;
+    state.proc_tree_prev = tree_mode;
+    let numpids = if tree_mode {
+        // `:2051 numpids = size - filter_found` (hidden rows excluded).
+        (ordered.len() as i64 - filter_found).max(0)
+    } else {
+        ordered.len() as i64
+    };
+    // `locate_selection` (osx:2041-2044): keep the selected process
+    // selected across the collapse. A vanished pid skips (C++ would
+    // dereference `find` past the end there).
+    if locate_selection {
+        if let Some(pid) = selected_pid {
+            if let Some(loc) = ordered
+                .iter()
+                .find(|p| p.pid == pid)
+                .map(|p| p.tree_index as i64)
+            {
+                if state.proc_start >= loc || state.proc_start <= loc - select_max {
+                    state.proc_start = (loc - 1).max(0);
+                }
+                state.proc_selected = loc - state.proc_start + 1;
+            }
+        }
     }
     // Detail deques track `detailed_pid` across ticks.
     let cap = (width * 2).max(1);
@@ -1245,7 +1806,210 @@ mod tests {
             user: "u".to_string(),
             cmd: name.to_string(),
             p_nice: 0,
+            ppid: 0,
+            cpu_s: 0,
+            cpu_c: 0.0,
         }
+    }
+
+    fn proc_tree_raw(pid: u64, ppid: u64, name: &str) -> ProcRaw {
+        ProcRaw {
+            pid,
+            name: name.to_string(),
+            cpu_ticks: 1000,
+            mem_bytes: 100,
+            threads: 1,
+            user: "u".to_string(),
+            cmd: name.to_string(),
+            p_nice: 0,
+            ppid,
+            cpu_s: 0,
+            cpu_c: 0.0,
+        }
+    }
+
+    /// (pid, prefix, tree_index, depth, collapsed) in view order.
+    fn tree_rows(view: &[ProcInfo]) -> Vec<(u64, String, usize, usize, bool)> {
+        view.iter()
+            .map(|p| (p.pid, p.prefix.clone(), p.tree_index, p.depth, p.collapsed))
+            .collect()
+    }
+
+    #[test]
+    fn tree_builds_prefixes_and_order() {
+        let mut s = AppState::default();
+        s.tick_factor = 1.0;
+        s.proc_sorting = "pid".to_string();
+        s.proc_tree = true;
+        let raws = vec![
+            proc_tree_raw(1, 0, "init"),
+            proc_tree_raw(2, 1, "worker"),
+            proc_tree_raw(3, 1, "helper"),
+            proc_tree_raw(4, 2, "leaf"),
+        ];
+        let input = assemble_proc(&mut s, raws, 8000, 50, &TreeOps::default(), 10);
+        let rows = tree_rows(input.procs);
+        drop(input);
+        // Flat pid-desc ([4,3,2,1]) → ppid-stable groups → roots walk:
+        // 1 → children [3, 2] (sibling order kept) → 4 under 2.
+        // Headers: root-last children get "   ", so depth-1 rows carry
+        // a 4-wide indent ("    ├─").
+        assert_eq!(
+            rows,
+            vec![
+                (1, "[-]─".to_string(), 0, 0, false),
+                (3, "    ├─".to_string(), 1, 1, false),
+                (2, "   [-]─".to_string(), 2, 1, false),
+                (4, "       └─".to_string(), 3, 2, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn tree_collapse_hides_subtree() {
+        let mut s = AppState::default();
+        s.tick_factor = 1.0;
+        s.proc_sorting = "pid".to_string();
+        s.proc_tree = true;
+        let raws = vec![
+            proc_tree_raw(1, 0, "init"),
+            proc_tree_raw(2, 1, "worker"),
+            proc_tree_raw(3, 1, "helper"),
+            proc_tree_raw(4, 2, "leaf"),
+        ];
+        let ops = TreeOps {
+            collapse_pid: 2,
+            ..TreeOps::default()
+        };
+        let input = assemble_proc(&mut s, raws, 8000, 50, &ops, 10);
+        let rows = tree_rows(input.procs);
+        drop(input);
+        // 4 hides behind `filtered` (draw :2049) with the upstream
+        // `tree_sort` quirk index 1 (shared.cpp:171 binds the hidden-expr
+        // to `index_max`); the final stable sort floats it before 2.
+        // Filtered nodes render at depth 0 (`_collect_prefixes`).
+        // 2 flips to [+].
+        assert_eq!(
+            rows,
+            vec![
+                (1, "[-]─".to_string(), 0, 0, false),
+                (3, "    ├─".to_string(), 1, 1, false),
+                (4, "       └─".to_string(), 1, 0, false),
+                (2, "   [+]─".to_string(), 2, 1, true),
+            ]
+        );
+        // Collapse persists across ticks via the previous view.
+        let raws = vec![
+            proc_tree_raw(1, 0, "init"),
+            proc_tree_raw(2, 1, "worker"),
+            proc_tree_raw(3, 1, "helper"),
+            proc_tree_raw(4, 2, "leaf"),
+        ];
+        let input = assemble_proc(&mut s, raws, 8000, 50, &TreeOps::default(), 10);
+        let rows = tree_rows(input.procs);
+        drop(input);
+        let by_pid = |pid| rows.iter().find(|r| r.0 == pid).unwrap();
+        assert!(by_pid(2).4, "pid 2 stays collapsed");
+        // pid 4 recomputes identically (quirk index 1 + filtered → draw
+        // hides via :2049).
+        assert_eq!(by_pid(4).2, 1, "pid 4 stays hidden");
+    }
+
+    #[test]
+    fn tree_collapse_all_toggles() {
+        let mut s = AppState::default();
+        s.tick_factor = 1.0;
+        s.proc_sorting = "pid".to_string();
+        s.proc_tree = true;
+        let raws = || {
+            vec![
+                proc_tree_raw(1, 0, "init"),
+                proc_tree_raw(2, 1, "worker"),
+                proc_tree_raw(4, 2, "leaf"),
+            ]
+        };
+        let ops = TreeOps {
+            collapse_all: true,
+            ..TreeOps::default()
+        };
+        let input = assemble_proc(&mut s, raws(), 8000, 50, &ops, 10);
+        let rows = tree_rows(input.procs);
+        drop(input);
+        // Non-root 2 collapses; root 1 untouched; leaf hides (filtered +
+        // quirk index 1 → draw :2049 hides via the flag). `toggle_all`
+        // flags every non-root, leaves included; filtered nodes sit at
+        // depth 0.
+        assert_eq!(rows[0], (1, "[-]─".to_string(), 0, 0, false));
+        assert_eq!(rows[1], (2, "   [+]─".to_string(), 1, 1, true));
+        assert_eq!(rows[2], (4, "       └─".to_string(), 1, 0, true));
+        // Second press expands again.
+        let input = assemble_proc(&mut s, raws(), 8000, 50, &ops, 10);
+        let rows = tree_rows(input.procs);
+        drop(input);
+        assert_eq!(rows[1], (2, "   [-]─".to_string(), 1, 1, false));
+        assert_eq!(rows[2], (4, "       └─".to_string(), 2, 2, false));
+    }
+
+    #[test]
+    fn tree_orphan_adopted_to_root() {
+        let mut s = AppState::default();
+        s.tick_factor = 1.0;
+        s.proc_sorting = "pid".to_string();
+        s.proc_tree = true;
+        let raws = vec![proc_tree_raw(1, 0, "init"), proc_tree_raw(9, 99, "orphan")];
+        let input = assemble_proc(&mut s, raws, 8000, 50, &TreeOps::default(), 10);
+        let rows = tree_rows(input.procs);
+        drop(input);
+        // Flat pid-desc ([9, 1]) survives the ppid-stable sort, so the
+        // adopted orphan roots first; both at depth 0.
+        assert_eq!(
+            rows,
+            vec![
+                (9, " ├─".to_string(), 0, 0, false),
+                (1, " └─".to_string(), 1, 0, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn tree_filter_surfaces_match_at_depth_zero() {
+        let mut s = AppState::default();
+        s.tick_factor = 1.0;
+        s.proc_sorting = "pid".to_string();
+        s.proc_tree = true;
+        s.proc_filter = "leaf".to_string();
+        let raws = vec![
+            proc_tree_raw(1, 0, "init"),
+            proc_tree_raw(2, 1, "worker"),
+            proc_tree_raw(4, 2, "leaf"),
+        ];
+        let input = assemble_proc(&mut s, raws, 8000, 50, &TreeOps::default(), 10);
+        // Draw hides via `filtered || tree_index == len` (:2049) — node 2
+        // carries the quirk index 1 but stays flagged, so only 4 renders.
+        let visible: Vec<u64> = input
+            .procs
+            .iter()
+            .filter(|p| !p.filtered && p.tree_index != input.procs.len())
+            .map(|p| p.pid)
+            .collect();
+        let leaf = input.procs.iter().find(|p| p.pid == 4).unwrap().clone();
+        drop(input);
+        assert_eq!(visible, vec![4]);
+        assert_eq!(leaf.depth, 0);
+    }
+
+    #[test]
+    fn tree_short_cmd_takes_argv_basename() {
+        let mut s = AppState::default();
+        s.tick_factor = 1.0;
+        s.proc_sorting = "pid".to_string();
+        s.proc_tree = true;
+        let mut raw = proc_tree_raw(1, 0, "Python");
+        raw.cmd = "/usr/bin/python3 script.py".to_string();
+        let input = assemble_proc(&mut s, vec![raw], 8000, 50, &TreeOps::default(), 10);
+        let short = input.procs[0].short_cmd.clone();
+        drop(input);
+        assert_eq!(short, "python3");
     }
 
     #[test]
@@ -1259,12 +2023,13 @@ mod tests {
             proc_raw(10, "aaa", 1000, 100),
             proc_raw(20, "bbb", 1000, 200),
         ];
-        let input = assemble_proc(&mut s, raws, 8000, 50);
+        let input = assemble_proc(&mut s, raws, 8000, 50, &TreeOps::default(), 0);
         let pids: Vec<u64> = input.procs.iter().map(|p| p.pid).collect();
         drop(input);
-        assert_eq!(pids, vec![10, 20, 30]);
+        // C++ `proc_sorter` pid arm: unreversed = descending.
+        assert_eq!(pids, vec![30, 20, 10]);
 
-        // reverse flips.
+        // reverse flips to ascending.
         s.proc_sorting = "pid".to_string();
         s.proc_reversed = true;
         let raws = vec![
@@ -1272,10 +2037,10 @@ mod tests {
             proc_raw(10, "aaa", 1000, 100),
             proc_raw(20, "bbb", 1000, 200),
         ];
-        let input = assemble_proc(&mut s, raws, 8000, 50);
+        let input = assemble_proc(&mut s, raws, 8000, 50, &TreeOps::default(), 0);
         let pids: Vec<u64> = input.procs.iter().map(|p| p.pid).collect();
         drop(input);
-        assert_eq!(pids, vec![30, 20, 10]);
+        assert_eq!(pids, vec![10, 20, 30]);
 
         // filter keeps substring hit (draw-side matcher reused).
         s.proc_reversed = false;
@@ -1285,7 +2050,7 @@ mod tests {
             proc_raw(10, "aaa", 1000, 100),
             proc_raw(20, "bbb", 1000, 200),
         ];
-        let input = assemble_proc(&mut s, raws, 8000, 50);
+        let input = assemble_proc(&mut s, raws, 8000, 50, &TreeOps::default(), 0);
         let pids: Vec<u64> = input.procs.iter().map(|p| p.pid).collect();
         drop(input);
         assert_eq!(pids, vec![20]);
@@ -1299,10 +2064,24 @@ mod tests {
         s.per_core = true;
         s.proc_sorting = "pid".to_string();
         // First tick seeds last map (delta 0 → cpu 0).
-        let _ = assemble_proc(&mut s, vec![proc_raw(7, "p", 4000, 100)], 8000, 50);
+        let _ = assemble_proc(
+            &mut s,
+            vec![proc_raw(7, "p", 4000, 100)],
+            8000,
+            50,
+            &TreeOps::default(),
+            0,
+        );
         // Second tick: delta_proc=4000, delta_total=8000 → A=0.5 → round 1;
         // cmult=8 → 0.008 (matches pure fn).
-        let input = assemble_proc(&mut s, vec![proc_raw(7, "p", 8000, 100)], 8000, 50);
+        let input = assemble_proc(
+            &mut s,
+            vec![proc_raw(7, "p", 8000, 100)],
+            8000,
+            50,
+            &TreeOps::default(),
+            0,
+        );
         let cpu_p = input.procs[0].cpu_p;
         drop(input);
         let expected = proc_cpu_percent(4000, 8000, 1.0, 8, 8);
@@ -1316,8 +2095,22 @@ mod tests {
         s.tick_factor = 1.0;
         s.detailed_pid = 7;
         s.proc_sorting = "pid".to_string();
-        let _ = assemble_proc(&mut s, vec![proc_raw(7, "p", 4000, 4096)], 8000, 50);
-        let _ = assemble_proc(&mut s, vec![proc_raw(7, "p", 8000, 8192)], 8000, 50);
+        let _ = assemble_proc(
+            &mut s,
+            vec![proc_raw(7, "p", 4000, 4096)],
+            8000,
+            50,
+            &TreeOps::default(),
+            0,
+        );
+        let _ = assemble_proc(
+            &mut s,
+            vec![proc_raw(7, "p", 8000, 8192)],
+            8000,
+            50,
+            &TreeOps::default(),
+            0,
+        );
         assert_eq!(s.detail_cpu.len(), 2);
         assert_eq!(s.detail_mem.len(), 2);
         assert!(s.detail.is_some());
@@ -1430,7 +2223,7 @@ mod tests {
             proc_raw(20, "bbb", 1000, 200),
         ];
         s.proc_scroll_pos = 7;
-        let _ = assemble_proc(&mut s, raws, 8000, 50);
+        let _ = assemble_proc(&mut s, raws, 8000, 50, &TreeOps::default(), 0);
         assert_eq!(
             s.proc_scroll_pos, 7,
             "tick must leave proc_scroll_pos untouched"

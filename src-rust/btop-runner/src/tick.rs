@@ -35,7 +35,7 @@ use btop_draw::net::draw_net;
 use btop_draw::proc_::draw_proc;
 
 use super::sink::{Sys, World};
-use super::wiring::{assemble_cpu, assemble_mem, assemble_net, assemble_proc, DiskSample};
+use super::wiring::{assemble_cpu, assemble_mem, assemble_net, assemble_proc, DiskSample, TreeOps};
 
 /// Per-tick inputs. `backend` drives all collect calls; `now_ms` is the
 /// P4-supplied monotonic clock; `force_redraw_in` triggers an out-of-band
@@ -401,7 +401,24 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
         // `cpu_p` math; we re-use the assembled state.last_cputimes for
         // parity with the existing wiring tests).
         let delta_total = w.state.last_cputimes;
-        let proc_input = assemble_proc(&mut w.state, raws, delta_total, term_w);
+        // Tree collapse channel (C++ `Proc::` members, osx:1968-2006):
+        // built from Config, reset after the call (= C++ `= -1`).
+        let ops = TreeOps {
+            expand_pid: w.config.get_i("proc_expand_pid").unwrap_or(-1),
+            collapse_pid: w.config.get_i("proc_collapse_pid").unwrap_or(-1),
+            toggle_children_pid: w.config.get_i("proc_toggle_children_pid").unwrap_or(-1),
+            collapse_all: w.config.get_b("proc_collapse_all").unwrap_or(false),
+            auto_collapse: w.config.get_i("proc_tree_auto_collapse").unwrap_or(0),
+            aggregate: w.config.get_b("proc_aggregate").unwrap_or(false),
+        };
+        let select_max = w.layout.proc.select_max;
+        let proc_input = assemble_proc(&mut w.state, raws, delta_total, term_w, &ops, select_max);
+        // Reset the collapse channel (= C++ `collapse = expand = -1`,
+        // osx:1998-2006) so one keypress collapses exactly once.
+        let _ = w.config.set_i("proc_expand_pid", -1);
+        let _ = w.config.set_i("proc_collapse_pid", -1);
+        let _ = w.config.set_i("proc_toggle_children_pid", -1);
+        let _ = w.config.set_b("proc_collapse_all", false);
         // cpp:637: pass force_redraw / no_update to Proc::draw.
         let mut proc_input = proc_input;
         proc_input.force_redraw = force_redraw;

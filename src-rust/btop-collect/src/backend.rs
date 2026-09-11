@@ -52,6 +52,17 @@ pub struct ProcRaw {
     pub cmd: String,
     /// Nice value from kinfo (refreshed every tick, like upstream).
     pub p_nice: i64,
+    /// Parent pid (`kp_eproc.e_ppid`, osx/btop_collect.cpp:1861); drives
+    /// tree view. Cached per pid like the other identity fields.
+    pub ppid: u64,
+    /// Process start time in wall micros (`p_starttime`, :1862); backs
+    /// `cpu_c` below. Read fresh every tick (C++ caches it in `no_cache`;
+    /// same value absent pid reuse, fresher under it).
+    pub cpu_s: u64,
+    /// Cumulative cpu usage since process start
+    /// (`(cpu_t * machTck) / (timeNow - cpu_s)`, :1892); backs the
+    /// "cpu direct" sort key.
+    pub cpu_c: f64,
 }
 
 /// Deterministic replay source for tests. Queues drain FIFO in call order.
