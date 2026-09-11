@@ -107,3 +107,15 @@ fn smoke_proc_identity_cached_live() {
     let one2 = again.iter().find(|p| p.pid == 1).expect("pid 1 present");
     assert_eq!((&one2.user, &one2.cmd), (&one.user, &one.cmd));
 }
+
+#[test]
+fn smoke_iface_addrs_live_have_ipv4() {
+    let mut b = RealBackend::new();
+    let addrs = b.iface_addrs().expect("iface_addrs live");
+    assert!(!addrs.is_empty(), "at least lo0 present");
+    // lo0 always carries 127.0.0.1 — presence proves inet_ntop works.
+    assert!(
+        addrs.iter().any(|(_, v4, _)| v4 == "127.0.0.1"),
+        "lo0 ipv4 present: {addrs:?}"
+    );
+}

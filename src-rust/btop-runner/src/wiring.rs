@@ -619,6 +619,7 @@ pub fn assemble_cpu<'a>(
 pub fn assemble_net<'a>(
     state: &'a mut AppState,
     counters: &[(String, u64, u64)],
+    addrs: &[(String, String, String)],
     dt_ms: u64,
     width: usize,
 ) -> NetDrawInput<'a> {
@@ -641,6 +642,19 @@ pub fn assemble_net<'a>(
         .or_else(|| counters.first().map(|_| 0));
     if let Some(i) = pick {
         let (name, down, up) = (counters[i].0.clone(), counters[i].1, counters[i].2);
+        // Interface addresses (C++ Net::collect getifaddrs pass): first
+        // IPv4/IPv6 per interface; missing → empty (draw falls back
+        // ipv6→ipv4→blank, :1507). NOTE: IFF_RUNNING `connected` is not
+        // carried yet — auto-pick already approximates it (busiest wins)
+        // and `net_connected` stays true; disconnected rendering is a
+        // follow-up.
+        if let Some((_, v4, v6)) = addrs.iter().find(|(n, _, _)| *n == name) {
+            state.ipv4 = v4.clone();
+            state.ipv6 = v6.clone();
+        } else {
+            state.ipv4.clear();
+            state.ipv6.clear();
+        }
         let (ld, lu) = state.net_last.get(&name).copied().unwrap_or((0, 0));
         let (rd, ru) = state.net_rollover.get(&name).copied().unwrap_or((0, 0));
         let (od, ou) = state.net_offset.get(&name).copied().unwrap_or((0, 0));
@@ -1133,9 +1147,9 @@ mod tests {
         let mut s = AppState::default();
         s.selected_iface = "eth0".to_string();
         let c1 = vec![("eth0".to_string(), 1_000_000u64, 500_000u64)];
-        let _ = assemble_net(&mut s, &c1, 1000, 50);
+        let _ = assemble_net(&mut s, &c1, &[], 1000, 50);
         let c2 = vec![("eth0".to_string(), 1_002_000u64, 500_500u64)];
-        let input = assemble_net(&mut s, &c2, 1000, 50);
+        let input = assemble_net(&mut s, &c2, &[], 1000, 50);
         let down_speed = input.stat.get("download").unwrap().speed;
         let up_speed = input.stat.get("upload").unwrap().speed;
         let down_total = input.stat.get("download").unwrap().total;
@@ -1151,7 +1165,7 @@ mod tests {
     fn net_first_tick_primes_speed_zero_total_is_val() {
         let mut s = AppState::default();
         let c = vec![("en1".to_string(), 1_600_000_000u64, 3_600_000_000u64)];
-        let input = assemble_net(&mut s, &c, 2000, 50);
+        let input = assemble_net(&mut s, &c, &[], 2000, 50);
         // No delta-from-zero spike: speed 0, top stays 0, total is the raw
         // counter. Selection latched to the only interface.
         assert_eq!(input.stat.get("download").unwrap().speed, 0);
@@ -1161,7 +1175,7 @@ mod tests {
         assert_eq!(s.selected_iface, "en1");
         // Second tick with a small delta reports the real speed.
         let c2 = vec![("en1".to_string(), 1_600_004_000u64, 3_600_004_000u64)];
-        let input2 = assemble_net(&mut s, &c2, 2000, 50);
+        let input2 = assemble_net(&mut s, &c2, &[], 2000, 50);
         assert_eq!(input2.stat.get("download").unwrap().speed, 2000);
         assert_eq!(input2.stat.get("download").unwrap().top, 2000);
         drop(input2);
@@ -1174,7 +1188,7 @@ mod tests {
             ("lo0".to_string(), 400u64, 400u64),
             ("en1".to_string(), 1_000_000u64, 2_000_000u64),
         ];
-        let _ = assemble_net(&mut s, &c, 1000, 50);
+        let _ = assemble_net(&mut s, &c, &[], 1000, 50);
         assert_eq!(s.selected_iface, "en1");
     }
 
@@ -1187,7 +1201,7 @@ mod tests {
         // with no net_last entry, i.e. true cold start).
         s.net_last.insert("eth0".to_string(), (1_000_000, 0));
         let c = vec![("eth0".to_string(), 1_002_000u64, 0u64)];
-        let input = assemble_net(&mut s, &c, 1000, 50);
+        let input = assemble_net(&mut s, &c, &[], 1000, 50);
         let total = input.stat.get("download").unwrap().total;
         let offset = input.stat.get("download").unwrap().offset;
         drop(input);
@@ -1196,7 +1210,7 @@ mod tests {
         // offset above val+rollover resets to 0 and persists (cpp:1561).
         s.net_offset.insert("eth0".to_string(), (5_000_000, 0));
         let c2 = vec![("eth0".to_string(), 1_003_000u64, 0u64)];
-        let input2 = assemble_net(&mut s, &c2, 1000, 50);
+        let input2 = assemble_net(&mut s, &c2, &[], 1000, 50);
         let offset2 = input2.stat.get("download").unwrap().offset;
         drop(input2);
         assert_eq!(offset2, 0);
@@ -1210,7 +1224,7 @@ mod tests {
             ("eth0".to_string(), 1u64, 2u64),
             ("wlan0".to_string(), 3u64, 4u64),
         ];
-        let _ = assemble_net(&mut s, &c, 1000, 50);
+        let _ = assemble_net(&mut s, &c, &[], 1000, 50);
         assert_eq!(
             s.net_interfaces,
             vec!["eth0".to_string(), "wlan0".to_string()]

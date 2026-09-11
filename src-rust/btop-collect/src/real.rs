@@ -80,6 +80,16 @@ extern "C" {
     // sys/statvfs.h:60 `int statvfs(const char *, struct statvfs *);`
     fn statvfs(path: *const u8, buf: *mut u8) -> i32;
     // sys/mount.h:397 `int getmntinfo(struct statfs **mntbufp, int flags);`
+    // ifaddrs.h:122 `int getifaddrs(struct ifaddrs **);`
+    // ifaddrs.h:128 `void freeifaddrs(struct ifaddrs *);`
+    // arpa/inet.h: `const char *inet_ntop(int, const void *, char *, socklen_t);`
+    // Opaque-pointer decls; fields read as raw bytes (C-measured offsets,
+    // see probe): ifa_next@0, ifa_name@8 (char *), ifa_flags@16 (skipped),
+    // ifa_addr@24 (sockaddr *); sockaddr sa_family@1 (sa_len@0!);
+    // AF_INET=2/sin_addr@4, AF_INET6=30/sin6_addr@8.
+    fn getifaddrs(ifap: *mut *mut u8) -> i32;
+    fn freeifaddrs(ifa: *mut u8);
+    fn inet_ntop(af: i32, src: *const u8, dst: *mut u8, size: u32) -> *const u8;
     // MNT_NOWAIT=2 (sys/mount.h:522). Opaque out-pointer: entries are read
     // as raw bytes — stride 2168B, f_fstypename[16]@72, f_mntonname[1024]@88
     // (C-measured via clang sizeof/offsetof probe against sys/mount.h).
@@ -1211,6 +1221,82 @@ impl MacOsBackend for RealBackend {
     // skip autofs; name = mountpoint filename, root → "root". The
     // disks_filter include/exclude pass lives in apply_disks_filter
     // (backend.rs); unmounted entries are pruned tick-side.
+    // C++ osx/btop_collect.cpp:1477-1513: getifaddrs walk; first IPv4/IPv6
+    // per interface wins; AF_LINK and null addr skipped. inet_ntop into a
+    // 46B buffer (INET6_ADDRSTRLEN ≥ INET_ADDRSTRLEN, C++ static_assert).
+    fn iface_addrs(&mut self) -> Result<Vec<(String, String, String)>, CollectError> {
+        // (iface, v4, v6) accumulator with first-wins per family.
+        let mut out: Vec<(String, String, String)> = Vec::new();
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: getifaddrs allocates a linked list freed with
+            // freeifaddrs below. Field offsets C-measured (see extern
+            // decl). All calls happen on the single tick thread.
+            let mut head: *mut u8 = std::ptr::null_mut();
+            if unsafe { getifaddrs(&mut head) } != 0 || head.is_null() {
+                return Ok(out);
+            }
+            let mut ipbuf = vec![0u8; 46];
+            let mut cur = head;
+            while !cur.is_null() {
+                // SAFETY: `cur` links the list getifaddrs just built.
+                let next = unsafe { *(cur as *const *mut u8) };
+                let addr = unsafe { *(cur.add(24) as *const *const u8) };
+                if !addr.is_null() {
+                    // SAFETY: ifa_name is a NUL-terminated C string.
+                    let name_ptr = unsafe { *(cur.add(8) as *const *const c_char) };
+                    // BSD sockaddr starts with sa_len@0, sa_family@1
+                    // (C-measured, sys/socket.h) — NOT @0.
+                    let fam = unsafe { *addr.add(1) };
+                    let (v4, v6, len) = match fam {
+                        2 => (true, false, 4usize),   // AF_INET, sin_addr@4
+                        30 => (false, true, 16usize), // AF_INET6, sin6_addr@8
+                        _ => (false, false, 0),
+                    };
+                    if len > 0 && !name_ptr.is_null() {
+                        let off = if v4 { 4 } else { 8 };
+                        // SAFETY: src points len bytes into the sockaddr;
+                        // dst is a 46B stack buffer (fits both families).
+                        let ok = unsafe {
+                            inet_ntop(
+                                fam as i32,
+                                addr.add(off),
+                                ipbuf.as_mut_ptr(),
+                                ipbuf.len() as u32,
+                            )
+                        };
+                        if !ok.is_null() {
+                            let name = unsafe { CStr::from_ptr(name_ptr) }
+                                .to_string_lossy()
+                                .into_owned();
+                            let ip = unsafe { CStr::from_ptr(ipbuf.as_ptr() as *const c_char) }
+                                .to_string_lossy()
+                                .into_owned();
+                            match out.iter_mut().find(|(n, _, _)| *n == name) {
+                                Some(entry) => {
+                                    if v4 && entry.1.is_empty() {
+                                        entry.1 = ip;
+                                    } else if v6 && entry.2.is_empty() {
+                                        entry.2 = ip;
+                                    }
+                                }
+                                None => out.push(if v4 {
+                                    (name, ip, String::new())
+                                } else {
+                                    (name, String::new(), ip)
+                                }),
+                            }
+                        }
+                    }
+                }
+                cur = next;
+            }
+            // SAFETY: `head` is the list getifaddrs returned; freed once.
+            unsafe { freeifaddrs(head) };
+        }
+        Ok(out)
+    }
+
     fn disk_mounts(&mut self) -> Result<Vec<(String, String)>, CollectError> {
         fn field(bytes: &[u8]) -> String {
             String::from_utf8_lossy(bytes)

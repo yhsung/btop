@@ -569,6 +569,12 @@ fn backend_methods_called_per_box() {
             self.calls.push("if_counters".into());
             self.b.if_counters()
         }
+        fn iface_addrs(
+            &mut self,
+        ) -> Result<Vec<(String, String, String)>, btop_collect::types::CollectError> {
+            self.calls.push("iface_addrs".into());
+            self.b.iface_addrs()
+        }
         fn proc_list(&mut self) -> Result<Vec<ProcRaw>, btop_collect::types::CollectError> {
             self.calls.push("proc_list".into());
             self.b.proc_list()
@@ -747,4 +753,50 @@ fn tick_threads_backend_uptime_into_state() {
         },
     );
     assert_eq!(w.state.uptime_secs, 398_123);
+}
+
+#[test]
+fn tick_net_addrs_fill_state_and_old_ip() {
+    let mut w = harness_world();
+    let mut s = FakeSys::default();
+    let mut b = fake_backend();
+    // First tick consumes fake_backend's eth0 counters (latches eth0).
+    let _ = tick(
+        &mut w,
+        &mut s,
+        TickInput {
+            backend: &mut b,
+            now_ms: 0,
+            pending_resize: false,
+            should_quit: false,
+            force_redraw_in: true,
+            overlay: String::new(),
+        },
+    );
+    assert_eq!(w.state.selected_iface, "eth0");
+    // Second tick sees only en1 → re-picks; its IPv4 lands in state and
+    // old_ip snapshots it post-draw (C++ :1508-1509).
+    b.if_counters_q
+        .push_back(vec![("en1".to_string(), 2000, 1000)]);
+    // First tick drains the default-empty addrs; this entry serves tick 2.
+    b.iface_addrs_q.push_back(vec![(
+        "en1".to_string(),
+        "192.168.0.20".to_string(),
+        String::new(),
+    )]);
+    let _ = tick(
+        &mut w,
+        &mut s,
+        TickInput {
+            backend: &mut b,
+            now_ms: 2000,
+            pending_resize: false,
+            should_quit: false,
+            force_redraw_in: true,
+            overlay: String::new(),
+        },
+    );
+    assert_eq!(w.state.selected_iface, "en1");
+    assert_eq!(w.state.ipv4, "192.168.0.20");
+    assert_eq!(w.state.old_ip, "192.168.0.20");
 }

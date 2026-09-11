@@ -22,6 +22,9 @@ pub trait MacOsBackend {
     /// Returns seconds since boot (C++ Tools::system_uptime,
     /// osx/btop_collect.cpp:2057-2066: now - kern.boottime).
     fn system_uptime(&mut self) -> u64;
+    /// Returns (iface, ipv4, ipv6) — first address per family wins (C++
+    /// osx/btop_collect.cpp:1489-1513). ReplayBackend drains a queue.
+    fn iface_addrs(&mut self) -> Result<Vec<(String, String, String)>, CollectError>;
     /// Returns (mountpoint, display name) per mounted fs (C++ `found` list,
     /// osx/btop_collect.cpp:1300-1330). ReplayBackend drains a queue.
     fn disk_mounts(&mut self) -> Result<Vec<(String, String)>, CollectError>;
@@ -56,7 +59,7 @@ pub struct ProcRaw {
 /// `load_avg` → `Ok([0,0,0])`, `package_temp` → `Ok(None)`, `core_temps` → `Ok(vec![])`,
 /// `vm_raw` → `Err(Unsupported)`, `swap_raw` → `Ok((0,0,0))`, `disk_raw` → `Ok((0,0,0))`,
 /// `if_counters` → `Ok(vec![])`, `proc_list` → `Ok(vec![])`,
-/// `disk_mounts` → `Ok(vec![])`,
+/// `disk_mounts` → `Ok(vec![])`, `iface_addrs` → `Ok(vec![])`,
 /// `gpu_residency` → `Ok(vec![])`, `gpu_energy` → `Ok((0, Nano))`, `hid_temps` → `Ok(vec![])`.
 /// Tasks 4–6 append their methods here with the same documented fallback.
 #[derive(Debug, Default)]
@@ -69,6 +72,7 @@ pub struct ReplayBackend {
     pub swap_raw_q: VecDeque<(u64, u64, u64)>,
     pub disk_raw_q: VecDeque<(u64, u64, u64)>,
     pub disk_mounts_q: VecDeque<Vec<(String, String)>>,
+    pub iface_addrs_q: VecDeque<Vec<(String, String, String)>>,
     pub if_counters_q: VecDeque<Vec<(String, u64, u64)>>,
     pub proc_list_q: VecDeque<Vec<ProcRaw>>,
     pub gpu_residency_q: VecDeque<Vec<(String, u64, u64)>>,
@@ -105,6 +109,9 @@ impl MacOsBackend for ReplayBackend {
     }
     fn disk_mounts(&mut self) -> Result<Vec<(String, String)>, CollectError> {
         Ok(self.disk_mounts_q.pop_front().unwrap_or_default())
+    }
+    fn iface_addrs(&mut self) -> Result<Vec<(String, String, String)>, CollectError> {
+        Ok(self.iface_addrs_q.pop_front().unwrap_or_default())
     }
     fn if_counters(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError> {
         Ok(self.if_counters_q.pop_front().unwrap_or_default())

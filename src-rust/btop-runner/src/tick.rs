@@ -379,10 +379,18 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
     // NET
     if has_net && !paused {
         let counters = t.backend.if_counters().unwrap_or_default();
-        let net_input = assemble_net(&mut w.state, &counters, update_ms, term_w);
+        let addrs = t.backend.iface_addrs().unwrap_or_default();
+        let net_input = assemble_net(&mut w.state, &counters, &addrs, update_ms, term_w);
         let s = draw_net(&net_input, &w.layout.net, &theme);
         output.push_str(&s);
         ran_boxes.push("net".to_string());
+        // C++ :1508-1509 stores old_ip AFTER draw consumed the previous
+        // value (frame re-emits when the IP changed).
+        w.state.old_ip = if w.state.ipv4.is_empty() {
+            w.state.ipv6.clone()
+        } else {
+            w.state.ipv4.clone()
+        };
     }
 
     // PROC
