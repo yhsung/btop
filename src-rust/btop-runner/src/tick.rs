@@ -417,24 +417,69 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
     let pause_output = !t.overlay.is_empty() && !w.background_update;
     w.paused = pause_output;
 
+    // Header clock (Draw::update_clock :333-392, run("clock") :748-751).
+    // Consumes w.clock_refresh (set by the UpdateClock action, fired once
+    // per second and on resize by the main loop): rebuilds state.clock.time
+    // from clock_format, then renders below. Skipped when paused, when an
+    // overlay owns the screen (:1147 `not Menu::active`), when cpu is
+    // hidden, or when the format is empty (:335-339).
+    let cpu_shown = boxes.contains(&"cpu");
+    let fmt = w.config.get_s("clock_format").unwrap_or("").to_string();
+    if w.clock_refresh && !pause_output && t.overlay.is_empty() && cpu_shown && !fmt.is_empty() {
+        let s = btop_tools::time::clock_string(
+            &fmt,
+            (t.now_ms / 1000) as i64,
+            &btop_tools::time::local_user(),
+            &btop_tools::time::local_host(),
+            w.state.uptime_secs,
+        );
+        w.state.clock.time = s;
+        w.state.clock.date = String::new();
+        w.clock_refresh = false;
+    }
     // cpp:663: clock appended only when not paused (the clock IS the only
     // thing that still renders under pause_output, per the existing C++:
     // actually re-reading cpp:663 shows the inverse: `if (not pause_output)
     // output += conf.clock;` — clock is suppressed under pause. We mirror.)
+    // Battery inset mirrors :382 (`width >= 100 && show_battery &&
+    // has_battery ? 22 : 0`); prev_len persists in state (C++ clock_len
+    // static) for erase-on-shrink.
     if !pause_output && (!w.state.clock.time.is_empty() || !w.state.clock.date.is_empty()) {
         use btop_draw::boxes::render_clock;
-        let (clk, _len) = render_clock(
-            &w.state.clock,
-            0, // prev_len = 0 (no erase on first draw)
-            1,
-            1,
-            term_w as i64,
-            false,
-            false,
-            0,
-            "",
-            "",
+        let geom = &w.layout.cpu.base;
+        let cpu_bottom = w.config.get_b("cpu_bottom").unwrap_or(false);
+        let battery_cols =
+            if term_w >= 100 && w.state.cpu_flags.show_battery_cfg && w.state.cpu_flags.has_battery
+            {
+                22
+            } else {
+                0
+            };
+        let box_color = btop_draw::theme_grad::color(
+            "cpu_box",
+            &theme,
+            w.state.cpu_flags.common.lowcolor,
+            w.state.cpu_flags.common.theme_background,
         );
+        let title_color = btop_draw::theme_grad::color(
+            "title",
+            &theme,
+            w.state.cpu_flags.common.lowcolor,
+            w.state.cpu_flags.common.theme_background,
+        );
+        let (clk, len) = render_clock(
+            &w.state.clock,
+            w.state.clock_len,
+            geom.x,
+            geom.y,
+            geom.width,
+            cpu_bottom,
+            t.pending_resize,
+            battery_cols,
+            &box_color,
+            &title_color,
+        );
+        w.state.clock_len = len;
         output.push_str(&clk);
     }
 

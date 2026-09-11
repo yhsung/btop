@@ -162,6 +162,9 @@ pub struct AppState {
     pub uptime_secs: u64,
     pub term_width: i64,
     pub term_height: i64,
+    /// Previous header-clock byte length (C++ update_clock clock_len
+    /// static) for erase-on-shrink.
+    pub clock_len: usize,
     pub cpu_flags: CpuFlags,
     // mem state (stats map mirrors `Mem::stats`; histories live in `hist`)
     pub mem_stats: HashMap<String, u64>,
@@ -285,6 +288,7 @@ impl Default for AppState {
             uptime_secs: 0,
             term_width: 100,
             term_height: 30,
+            clock_len: 0,
             cpu_flags: CpuFlags::harness_defaults(),
             mem_stats: HashMap::new(),
             mem_disks: HashMap::new(),

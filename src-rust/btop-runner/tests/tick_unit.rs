@@ -800,3 +800,32 @@ fn tick_net_addrs_fill_state_and_old_ip() {
     assert_eq!(w.state.ipv4, "192.168.0.20");
     assert_eq!(w.state.old_ip, "192.168.0.20");
 }
+
+#[test]
+fn tick_clock_refresh_fills_and_renders() {
+    let mut w = harness_world();
+    w.config
+        .strings
+        .insert("clock_format".into(), "%H:%M:%S".into());
+    w.clock_refresh = true;
+    let mut s = FakeSys::default();
+    let mut b = fake_backend();
+    let out = tick(
+        &mut w,
+        &mut s,
+        TickInput {
+            backend: &mut b,
+            now_ms: 1_700_000_000_000,
+            pending_resize: false,
+            should_quit: false,
+            force_redraw_in: true,
+            overlay: String::new(),
+        },
+    );
+    // Refresh consumed, wall time filled (shape only — tz dependent),
+    // rendered bytes carry it inside box-title glyphs.
+    assert!(!w.clock_refresh);
+    assert_eq!(w.state.clock.time.len(), 8);
+    assert!(out.out.contains(&w.state.clock.time));
+    assert!(out.out.contains("┐"));
+}

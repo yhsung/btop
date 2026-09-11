@@ -229,6 +229,9 @@ impl Default for World {
             .insert("proc_sorting".into(), "cpu lazy".into());
         config.strings.insert("temp_scale".into(), "celsius".into());
         config.strings.insert("log_level".into(), "INFO".into());
+        // C++ default (verified via --default-config); without it the
+        // header clock is skipped as "empty format" (update_clock :335).
+        config.strings.insert("clock_format".into(), "%X".into());
         config
             .strings
             .insert("graph_symbol".into(), "braille".into());
