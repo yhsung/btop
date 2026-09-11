@@ -180,7 +180,7 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
     // cpp:1093/1138: Draw::calcSizes re-runs on every resize/ApplyTheme
     // trigger. `w.recalc_layout` is the sink-driven request flag.
     let term_w = w.state.term_width.max(20) as usize;
-    let term_h = 30i64; // P3 default; P4 reads Term::height
+    let term_h = w.state.term_height.max(10);
     if w.recalc_layout {
         let shown_boxes = w
             .config

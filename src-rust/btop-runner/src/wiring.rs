@@ -161,6 +161,7 @@ pub struct AppState {
     pub battery: Option<BatteryState>,
     pub uptime_secs: u64,
     pub term_width: i64,
+    pub term_height: i64,
     pub cpu_flags: CpuFlags,
     // mem state (stats map mirrors `Mem::stats`; histories live in `hist`)
     pub mem_stats: HashMap<String, u64>,
@@ -283,6 +284,7 @@ impl Default for AppState {
             battery: None,
             uptime_secs: 0,
             term_width: 100,
+            term_height: 30,
             cpu_flags: CpuFlags::harness_defaults(),
             mem_stats: HashMap::new(),
             mem_disks: HashMap::new(),
@@ -629,10 +631,7 @@ pub fn assemble_net<'a>(
     if state.selected_iface.is_empty()
         || !counters.iter().any(|(n, _, _)| *n == state.selected_iface)
     {
-        if let Some((name, _, _)) = counters
-            .iter()
-            .max_by_key(|(_, d, u)| d.saturating_add(*u))
-        {
+        if let Some((name, _, _)) = counters.iter().max_by_key(|(_, d, u)| d.saturating_add(*u)) {
             state.selected_iface = name.clone();
         }
     }

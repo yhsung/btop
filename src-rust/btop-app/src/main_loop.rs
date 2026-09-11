@@ -611,10 +611,12 @@ pub fn main_loop(
         // ── term_resize(resized) (:1136) ──
         // Keep the tick's width honest every iteration (cheap atomic load).
         world.state.term_width = env.term.width() as i64;
+        world.state.term_height = env.term.height() as i64;
         let resized = world.signal_flags.resized.swap(false, Ordering::SeqCst);
         let changed = env.term.refresh(false);
         if resized || changed {
             world.state.term_width = env.term.width() as i64;
+            world.state.term_height = env.term.height() as i64;
             let mut screen = String::new();
             match min_size_loop(world, env.term, env.input, &mut screen) {
                 MinSizeOutcome::Ready => {}
