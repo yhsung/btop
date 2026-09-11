@@ -93,3 +93,17 @@ fn smoke_system_uptime_live_positive() {
     // Any booted machine has uptime > 0; 0 means the sysctl path failed.
     assert!(b.system_uptime() > 0, "kern.boottime probe live");
 }
+
+#[test]
+fn smoke_proc_identity_cached_live() {
+    let mut b = RealBackend::new();
+    let procs = b.proc_list().expect("proc_list live");
+    // launchd (pid 1) always exists with a resolvable user + argv.
+    let one = procs.iter().find(|p| p.pid == 1).expect("pid 1 present");
+    assert!(!one.user.is_empty(), "pid 1 user resolved");
+    assert!(!one.cmd.is_empty(), "pid 1 cmd resolved");
+    // Second round reuses the cache (same identity values).
+    let again = b.proc_list().expect("proc_list live again");
+    let one2 = again.iter().find(|p| p.pid == 1).expect("pid 1 present");
+    assert_eq!((&one2.user, &one2.cmd), (&one.user, &one.cmd));
+}

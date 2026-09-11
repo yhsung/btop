@@ -10,11 +10,25 @@ use std::os::raw::c_char;
 #[derive(Debug, Default)]
 pub struct RealBackend {
     gpu: Option<GpuState>,
+    /// Per-pid identity cache (C++ `current_procs` name/cmd/user): name,
+    /// cmd and user are fetched ONLY for unseen pids (`no_cache`), then
+    /// reused; entries for vanished pids are pruned each round.
+    proc_meta: std::collections::HashMap<u64, ProcMeta>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ProcMeta {
+    name: String,
+    cmd: String,
+    user: String,
 }
 
 impl RealBackend {
     pub fn new() -> Self {
-        Self { gpu: None }
+        Self {
+            gpu: None,
+            proc_meta: std::collections::HashMap::new(),
+        }
     }
 }
 
@@ -60,6 +74,9 @@ extern "C" {
     fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut u8, buffersize: i32) -> i32;
     // libproc.h:102 `int proc_pidpath(int, void *, uint32_t);`
     fn proc_pidpath(pid: i32, buffer: *mut u8, buffersize: u32) -> i32;
+    // pwd.h:121 `struct passwd *getpwuid(uid_t);` pw_name is the first
+    // field (char * @0), so only the pointer is read — no struct layout.
+    fn getpwuid(uid: u32) -> *const u8;
     // sys/statvfs.h:60 `int statvfs(const char *, struct statvfs *);`
     fn statvfs(path: *const u8, buf: *mut u8) -> i32;
     // sys/mount.h:397 `int getmntinfo(struct statfs **mntbufp, int flags);`
@@ -309,6 +326,85 @@ fn basename_of(path: &[u8]) -> String {
     match s.rfind('/') {
         Some(i) => s[i + 1..].to_string(),
         None => s.to_string(),
+    }
+}
+
+// pwd.h:121 getpwuid → pw_name (char *@0), else numeric uid string
+// (C++ osx/btop_collect.cpp:1857-1862).
+fn username(uid: u32) -> String {
+    let pwd = unsafe { getpwuid(uid) };
+    if pwd.is_null() {
+        return uid.to_string();
+    }
+    // SAFETY: pw_name is the first field of struct passwd.
+    let name = unsafe { *(pwd as *const *const c_char) };
+    if name.is_null() {
+        return uid.to_string();
+    }
+    // SAFETY: kernel/libc guarantees a NUL-terminated pw_name.
+    unsafe { CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+// KERN_PROCARGS2 argv join (C++ osx/btop_collect.cpp:1835-1855): argc i32@0,
+// exec_path skipped via first-NUL-run, argv joined with ' ', capped at 1000
+// chars. None when empty/failed (caller falls back to the basename).
+fn proc_args(pid: i32, argmax: usize) -> Option<String> {
+    if argmax == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; argmax];
+    let mut len = argmax;
+    let mib: [i32; 3] = [1, 49, pid]; // CTL_KERN,KERN_PROCARGS2,pid
+                                      // SAFETY: out-buffer sized `len`; kernel writes ≤ len bytes.
+    let rc = unsafe {
+        sysctl(
+            mib.as_ptr(),
+            mib.len() as u32,
+            buf.as_mut_ptr(),
+            &mut len,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if rc != 0 || len < 4 {
+        return None;
+    }
+    let argc = i32::from_ne_bytes(buf[0..4].try_into().unwrap_or([0; 4]));
+    if argc <= 0 {
+        return None;
+    }
+    let body = &buf[4..len];
+    let mut pos = body.iter().position(|&b| b == 0)?;
+    while pos < body.len() && body[pos] == 0 {
+        pos += 1;
+    }
+    let mut cmd = String::new();
+    let mut taken = 0;
+    while taken < argc && pos < body.len() {
+        let end = body[pos..]
+            .iter()
+            .position(|&b| b == 0)
+            .map(|e| pos + e)
+            .unwrap_or(body.len());
+        if cmd.len() + (end - pos) + 1 > 1000 {
+            break;
+        }
+        if !cmd.is_empty() {
+            cmd.push(' ');
+        }
+        cmd.push_str(&String::from_utf8_lossy(&body[pos..end]));
+        pos = end + 1;
+        taken += 1;
+        while pos < body.len() && body[pos] == 0 {
+            pos += 1;
+        }
+    }
+    if cmd.is_empty() {
+        None
+    } else {
+        Some(cmd)
     }
 }
 
@@ -1163,17 +1259,28 @@ impl MacOsBackend for RealBackend {
     }
 
     // C++ cpp:1789-1800: two-phase sysctl({CTL_KERN,KERN_PROC,KERN_PROC_ALL,0})
-    // sizing + fetch, then per-pid proc_pidinfo (cpp:1875). Entries are
-    // KEPT on per-process failure (zombies/SIP-denied → zeroed stats, C++
-    // proc loop semantics); only dead pids (absent next round) drop out
-    // tick-side.
-    // kinfo_proc is 648B opaque here; pid i32@40 (C-measured).
-    // proc_taskinfo is 96B: rss u64@8, total_user@16, total_system@24,
-    // threadnum i32@84 (C-measured, sys/proc_info.h:124-143).
+    // sizing + fetch, then per-pid proc_pidinfo (cpp:1875).
+    // Identity (name/cmd/user) is fetched ONLY for unseen pids (`no_cache`,
+    // cpp:1824) and cached in `proc_meta`; taskinfo failures keep zeroed
+    // stats (cpp:1866-1872); p_nice refreshes every tick from kinfo
+    // (cpp:1863). kinfo_proc is 648B: pid i32@40, p_nice i8@242,
+    // cr_uid u32@420 (C-measured). proc_taskinfo is 96B: rss u64@8,
+    // total_user@16, total_system@24, threadnum i32@84 (C-measured,
+    // sys/proc_info.h:124-143).
     fn proc_list(&mut self) -> Result<Vec<ProcRaw>, CollectError> {
         let mib: [i32; 4] = [1, 14, 0, 0]; // CTL_KERN,KERN_PROC,KERN_PROC_ALL,0
         let buf = sysctl_fetch(&mib)?;
+        // C++ Shared::arg_max for the per-pid KERN_PROCARGS2 fetch.
+        let argmax = sysctl_fetch(&[1, 8]) // CTL_KERN,KERN_ARGMAX
+            .ok()
+            .and_then(|b| {
+                b.get(0..4)
+                    .map(|w| i32::from_ne_bytes([w[0], w[1], w[2], w[3]]))
+            })
+            .filter(|&n| n > 0)
+            .unwrap_or(0) as usize;
         let mut out = Vec::new();
+        let mut seen = Vec::new();
         let mut path = vec![0u8; 4096];
         let mut ti = vec![0u8; 96];
         // Manual chunking (not chunks_exact): identical semantics — a trailing
@@ -1184,11 +1291,15 @@ impl MacOsBackend for RealBackend {
         for i in 0..n_structs {
             let chunk = &buf[i * 648..(i + 1) * 648];
             let pid = read_i32(chunk, 40);
+            if pid < 1 {
+                continue; // C++ :1804
+            }
+            let pid_u = pid as u64;
+            seen.push(pid_u);
             // Mirror C++ (osx/btop_collect.cpp:proc loop): entries are kept
             // even when PROC_PIDTASKINFO fails (zombies, SIP-denied) — with
             // threads/mem zeroed — and only dropped when dead (absent from
-            // a later sysctl round, handled tick-side). No pid filter: pid 0
-            // sorts last on zero stats, same as upstream.
+            // a later sysctl round, pruned below).
             let rc = unsafe { proc_pidinfo(pid, PROC_PIDTASKINFO, 0, ti.as_mut_ptr(), 96) };
             let (ticks, mem, threads) = if rc as usize != 96 {
                 (0, 0, 0)
@@ -1199,20 +1310,41 @@ impl MacOsBackend for RealBackend {
                     read_i32(&ti, 84).max(0) as u64,
                 )
             };
-            let prc = unsafe { proc_pidpath(pid, path.as_mut_ptr(), 4096) };
-            let name = if prc > 0 {
-                basename_of(&path[..prc as usize])
-            } else {
-                "<defunct>".to_string()
-            };
+            // `no_cache` (C++ :1820-1824): identity fetched once per pid.
+            // Entry API keeps it single-lookup (clippy::map_entry clean on
+            // both toolchains); path/ti/chunk are loop locals, no borrow
+            // conflict with the map.
+            if let std::collections::hash_map::Entry::Vacant(slot) = self.proc_meta.entry(pid_u) {
+                let prc = unsafe { proc_pidpath(pid, path.as_mut_ptr(), 4096) };
+                let name = if prc > 0 {
+                    basename_of(&path[..prc as usize])
+                } else {
+                    "<defunct>".to_string()
+                };
+                let uid = read_u32(chunk, 420);
+                let cmd = proc_args(pid, argmax).unwrap_or_else(|| name.clone());
+                slot.insert(ProcMeta {
+                    name,
+                    cmd,
+                    user: username(uid),
+                });
+            }
+            // p_nice i8@242 refreshes every tick (C++ :1863).
+            let nice = chunk[242] as i8 as i64;
+            let meta = &self.proc_meta[&pid_u];
             out.push(ProcRaw {
-                pid: pid as u64,
-                name,
+                pid: pid_u,
+                name: meta.name.clone(),
                 cpu_ticks: ticks,
                 mem_bytes: mem,
                 threads,
+                user: meta.user.clone(),
+                cmd: meta.cmd.clone(),
+                p_nice: nice,
             });
         }
+        // Prune dead pids (C++ :1904-1905 remove_if, non-paused path).
+        self.proc_meta.retain(|pid, _| seen.contains(pid));
         Ok(out)
     }
 

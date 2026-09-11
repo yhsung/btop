@@ -43,6 +43,12 @@ pub struct ProcRaw {
     pub cpu_ticks: u64,
     pub mem_bytes: u64,
     pub threads: u64,
+    /// Login name (getpwuid) or numeric uid string; cached per pid.
+    pub user: String,
+    /// Full command line (KERN_PROCARGS2 argv joined); basename on failure.
+    pub cmd: String,
+    /// Nice value from kinfo (refreshed every tick, like upstream).
+    pub p_nice: i64,
 }
 
 /// Deterministic replay source for tests. Queues drain FIFO in call order.

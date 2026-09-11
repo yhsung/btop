@@ -88,6 +88,9 @@ fn fake_backend() -> ReplayBackend {
         cpu_ticks: 1000,
         mem_bytes: 4096,
         threads: 1,
+        user: "u".to_string(),
+        cmd: "/bin/p --flag".to_string(),
+        p_nice: 0,
     }]);
     b
 }

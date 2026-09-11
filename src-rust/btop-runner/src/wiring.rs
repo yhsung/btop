@@ -946,15 +946,15 @@ pub fn assemble_proc(
         ordered.push(ProcInfo {
             pid: raw.pid,
             name: raw.name.clone(),
-            // P4/live fills cmd/user/nice/prefix from the OS; headless
-            // tests only carry name/mem/threads.
-            cmd: raw.name.clone(),
+            // Full command line + owner from the OS (collected per pid,
+            // cached collect-side); short_cmd stays the display name.
+            cmd: raw.cmd.clone(),
             short_cmd: raw.name.clone(),
             threads: raw.threads,
-            user: String::new(),
+            user: raw.user.clone(),
             mem: raw.mem_bytes,
             cpu_p,
-            p_nice: 0,
+            p_nice: raw.p_nice,
             prefix: String::new(),
             tree_index: 0,
         });
@@ -1224,6 +1224,9 @@ mod tests {
             cpu_ticks: ticks,
             mem_bytes: mem,
             threads: 1,
+            user: "u".to_string(),
+            cmd: name.to_string(),
+            p_nice: 0,
         }
     }
 
