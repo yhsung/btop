@@ -59,9 +59,11 @@ pub struct SignalFlags {
     pub do_continue: Arc<AtomicBool>,
     /// Poll wake. DEVIATION: C++ calls `Input::interrupt()` at :293,
     /// :301, :317, :324 (and documents SIGUSR1 as the "Input::poll
-    /// interrupt", :319-321); the single-threaded port has no input
-    /// thread, so every interrupt site sets this flag and the main loop
-    /// wakes its `pselect` on it.
+    /// interrupt", :319-321); the single-threaded port has no input thread
+    /// to kick, so every interrupt site records this flag instead. The loop
+    /// never reads it — wakeup is the EINTR/timeout break, not the flag —
+    /// so it is handler-observability only; tests assert it as proof the
+    /// handler ran.
     pub interrupt_input: Arc<AtomicBool>,
     /// SIGUSR2: reload config (btop.cpp:124, handler :322-325).
     pub reload_conf: Arc<AtomicBool>,
