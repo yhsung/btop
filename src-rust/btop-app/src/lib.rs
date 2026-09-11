@@ -10,8 +10,8 @@ pub mod term;
 /// Locale hunt + UTF-8 detection (T3).
 pub mod locale;
 
-/// Signal handlers + atomic flag plumbing (T4). Placeholder.
-pub mod signals {}
+/// Signal handlers + atomic flag plumbing (T4).
+pub mod signals;
 
 /// Init chain: parse_cli → setuid_drop → init_config_dirs → init_locale
 /// → Term::init → configure_tty_mode → Shared::init → set_boxes fallback

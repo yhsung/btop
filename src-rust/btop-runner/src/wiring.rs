@@ -25,17 +25,80 @@ use btop_draw::proc_::{matches_filter, ProcDetail, ProcDrawInput, ProcFlags, Pro
 use btop_tools::mouse::MouseMap;
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::Arc;
 
 // ── SignalFlags ───────────────────────────────────────────────────────────
 // C++ atomics at btop.cpp:118-124 (`resized`, `quitting`, `should_quit`,
 // `should_sleep`, `_runner_started`, `init_conf`, `reload_conf`),
 // btop.cpp:133 (`resizing`), and btop.cpp:356-359 (`stopping`, `waiting`,
-// `redraw`, `coreNum_reset`). AtomicBool fields will land here in T4 —
-// the spec calls for `Arc<AtomicBool>` flags the signal handlers flip
-// and the main loop polls.
-#[derive(Debug, Default)]
+// `redraw`, `coreNum_reset`). The handler-written subset lands here as
+// `Arc<AtomicBool>` flags the signal handlers flip and the main loop
+// polls (see `btop_app::signals` for the signal→flag table).
+//
+// OWNERSHIP (binding): every flag is an `Arc<AtomicBool>`, so
+// `SignalFlags::clone()` shares state — a handler installed with a clone
+// observes the same flags as the main loop's copy. `Clone` is therefore
+// REQUIRED (not impossible-by-design): boot clones the flags once for
+// the installer and keeps the original in `World.signal_flags` (see
+// `sink::World`), and both sides observe identical state. `World` keeps
+// holding `SignalFlags` BY VALUE (field name/type path stable); sharing
+// happens one level down, inside each flag.
+#[derive(Debug, Default, Clone)]
 pub struct SignalFlags {
-    // AtomicBool fields will go here in T4
+    /// SIGWINCH: terminal resized (btop.cpp:118, handler :316-318).
+    pub resized: Arc<AtomicBool>,
+    /// SIGINT: quit requested (btop.cpp:120, handler :292-296).
+    pub should_quit: Arc<AtomicBool>,
+    /// SIGTSTP: sleep requested (btop.cpp:121, handler :297-306).
+    pub should_sleep: Arc<AtomicBool>,
+    /// SIGCONT: resume requested. DEVIATION: C++ calls `_resume()`
+    /// (Term::init + term_resize, :271-274) inline in the handler; that
+    /// is not async-signal-safe, so the Rust port records a flag and the
+    /// main loop performs the re-init.
+    pub do_continue: Arc<AtomicBool>,
+    /// Poll wake. DEVIATION: C++ calls `Input::interrupt()` at :293,
+    /// :301, :317, :324 (and documents SIGUSR1 as the "Input::poll
+    /// interrupt", :319-321); the single-threaded port has no input
+    /// thread, so every interrupt site sets this flag and the main loop
+    /// wakes its `pselect` on it.
+    pub interrupt_input: Arc<AtomicBool>,
+    /// SIGUSR2: reload config (btop.cpp:124, handler :322-325).
+    pub reload_conf: Arc<AtomicBool>,
+    /// SIGINT/SIGTSTP while running. DEVIATION: C++ sets
+    /// `Runner::stopping` only `if (Runner::active)` (:294, :300); the
+    /// single-threaded port has no runner thread, so the flag is set
+    /// unconditionally — the loop is always "active" once booted.
+    pub stopping: Arc<AtomicBool>,
+    /// Exit in progress (`Global::quitting`, btop.cpp:119, set by
+    /// `clean_quit` at :211-213). Written by the atexit hook
+    /// (`btop_app::signals::AtExitHook::run`); read by T6 `clean_quit`
+    /// as the re-entrancy guard.
+    pub quitting: Arc<AtomicBool>,
+}
+
+impl SignalFlags {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Clear every flag (main-loop drain + test helper). All stores use
+    /// `Ordering::SeqCst`: the port is single-threaded, but SeqCst keeps
+    /// handler/loop/test ordering total without measurable cost here.
+    pub fn clear_all(&self) {
+        for flag in [
+            &self.resized,
+            &self.should_quit,
+            &self.should_sleep,
+            &self.do_continue,
+            &self.interrupt_input,
+            &self.reload_conf,
+            &self.stopping,
+            &self.quitting,
+        ] {
+            flag.store(false, AtomicOrdering::SeqCst);
+        }
+    }
 }
 
 // ── HistoryStore ──────────────────────────────────────────────────────────
