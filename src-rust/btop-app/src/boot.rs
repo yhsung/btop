@@ -8,8 +8,8 @@
 //!   `log_level` + `proc_filter`);
 //! - `Shared::init`: src/osx/btop_collect.cpp `Shared::init` (`coreCount`,
 //!   `pageSize`, `machTck`/`clkTck`, `totalMem`, `Cpu::cpuName`, sensor list);
-//! - presets: src/btop.cpp:1093 (`presetsValid`) + `:1094-1097` (`cli.preset`
-//!   → `current_preset` → `apply_preset`), body src/btop_config.cpp:515-550
+//! - presets: src/btop.cpp:1076 (`presetsValid`) + `:1077-1080`
+//!   (`cli.preset` → `current_preset` → `apply_preset`), body src/btop_config.cpp:515-550
 //!   (canonical Rust port: `btop_runner::sink::apply_preset`, called here —
 //!   not duplicated).
 //!
@@ -37,6 +37,10 @@ pub trait FsOps {
     /// mirroring `get_config_dir` returning `{}`).
     fn config_base(&self) -> Option<PathBuf>;
     /// `create_directories` (src/btop_config.cpp:448, src/btop.cpp:880).
+    /// NOTE at this site: `RealFs::config_base` below folds the
+    /// `get_config_dir` writability triage (src/btop_config.cpp:403-462) into
+    /// this call — an unwritable base is reported here as `Err`, not probed
+    /// separately.
     fn create_dir_all(&self, path: &Path) -> Result<(), String>;
     /// `is_directory` + `R_OK` readable (src/btop.cpp:897, :909).
     fn is_readable_dir(&self, path: &Path) -> bool;
@@ -241,16 +245,18 @@ fn sysctl_bytes(name: &str) -> Option<Vec<u8>> {
 // ── trim_name ───────────────────────────────────────────────────────────────
 
 /// Shorten a raw CPU brand string. Port of `Cpu::trim_name`
-/// (src/btop_shared.cpp): Xeon/Intel + `CPU` → the token after `CPU`;
+/// (src/btop_shared.cpp:38-77): Xeon/Intel + `CPU` → the token after `CPU`;
 /// Ryzen → `Ryzen` + next two tokens; otherwise strip vendor words
 /// (`Processor`, `CPU`, `(R)`, `(TM)`, `Intel`, `AMD`, `Apple`, `Core`).
+/// The Intel arm carries C++'s `!= "@"` guard (:59); the Xeon arm (:43) has
+/// no such guard in C++, so it takes the token verbatim.
 pub fn trim_name(name: String) -> String {
     let words: Vec<&str> = name.split_whitespace().collect();
     let has = |t: &str| words.iter().any(|w| *w == t);
-    let token_after_cpu = || {
+    let token_after_cpu = |reject_at: bool| {
         let pos = words.iter().position(|w| *w == "CPU")?;
         let next = words.get(pos + 1)?;
-        if next.ends_with(')') {
+        if next.ends_with(')') || (reject_at && *next == "@") {
             None
         } else {
             Some((*next).to_string())
@@ -259,7 +265,7 @@ pub fn trim_name(name: String) -> String {
 
     let mut out: String;
     if (name.contains("Xeon") || has("Duo")) && has("CPU") {
-        out = token_after_cpu().unwrap_or_default();
+        out = token_after_cpu(false).unwrap_or_default();
     } else if has("Ryzen") {
         let ryz = words.iter().position(|w| *w == "Ryzen").unwrap_or(0);
         out = "Ryzen".to_string();
@@ -275,7 +281,7 @@ pub fn trim_name(name: String) -> String {
             i += 1;
         }
     } else if name.contains("Intel") && has("CPU") {
-        out = token_after_cpu().unwrap_or_default();
+        out = token_after_cpu(true).unwrap_or_default();
     } else {
         out = String::new();
     }
@@ -390,6 +396,8 @@ pub fn init_config_dirs(w: &mut World, cli: &Cli, fs: &dyn FsOps) -> Result<Vec<
 
 /// Lexical `..`/`.` resolution (`fs::canonical` without touching the fs,
 /// so the theme scan stays inside the mockable `FsOps` boundary).
+/// DEVIATION (intentional): `fs::canonical` resolves symlinks while this
+/// keeps them — lexical only, so symlinked theme dirs still match by path.
 fn normalize(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
@@ -440,14 +448,20 @@ pub fn shared_init(w: &mut World, probe: &dyn SysProbe) -> Result<(), String> {
 
 // ── apply_preset_default ────────────────────────────────────────────────────
 
-/// Apply the `--preset` default. Mirrors src/btop.cpp:1093-1097:
-/// `presetsValid(getS("presets"))` rebuilds the list, the requested index is
-/// clamped to the last entry, and `sink::apply_preset` (the canonical
-/// src/btop_config.cpp:515-550 port — called, not duplicated) applies it
-/// with the terminal-size gate pinned open (`term_ok=true`; the min-size
-/// loop is T6). On success sets `w.current_preset` to the clamped index; on
-/// `None` (no request) returns `false` with `current_preset` untouched —
-/// the caller decides keep-vs-reset.
+/// Apply the `--preset` default. Mirrors src/btop.cpp:1076-1080:
+/// `presetsValid(getS("presets"))` rebuilds the list (:1076), the requested
+/// index is clamped to the last entry, and `sink::apply_preset` (the
+/// canonical src/btop_config.cpp:515-550 port — called, not duplicated)
+/// applies it with the terminal-size gate pinned open (`term_ok=true`; the
+/// min-size loop is T6). On success sets `w.current_preset` to the clamped
+/// index; on `None` (no request) returns `false` with `current_preset`
+/// untouched — the caller decides keep-vs-reset.
+///
+/// DEVIATION (brief-mandated): C++ (:1078-1079) sets
+/// `current_preset = min(...)` unconditionally, then calls `apply_preset`
+/// ignoring its return; here `current_preset` is written only when
+/// `sink::apply_preset` reports `ok` (brief Step 3: "on-success-sets"), so a
+/// failed apply leaves the previous value in place.
 ///
 /// The preset index rides as a parameter because `Cli` is not stored in
 /// `World` (DEVIATION from the brief's `(&mut World) -> bool` shape, which
@@ -457,7 +471,7 @@ pub fn apply_preset_default(w: &mut World, preset: Option<u32>) -> bool {
         Some(i) => i as usize,
         None => return false,
     };
-    // btop.cpp:1093 — validate; on failure C++ keeps the old list, i.e. the
+    // btop.cpp:1076 — validate; on failure C++ keeps the old list, i.e. the
     // default head only (src/btop_config.cpp:476-477, :510).
     let presets = w.config.get_s("presets").unwrap_or("").to_string();
     let mut list = vec![DEFAULT_PRESET.to_string()];

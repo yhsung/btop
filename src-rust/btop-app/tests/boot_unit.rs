@@ -1,8 +1,10 @@
 //! Boot init-chain headless unit tests (P4 T5).
 //!
 //! Every scenario drives [`btop_app::boot`] with a [`MockFs`] / [`MockProbe`];
-//! no test touches the real filesystem, env, or syscalls, so the suite is
-//! hermetic and parallel-safe.
+//! no test touches the real filesystem for writes, env, or syscalls. The
+//! suite is hermetic except for one read-only exists-probe: `Config::load`
+//! probes the (non-existent) `/cfg/btop.conf` path read-only; no writes,
+//! no env reads, no sysctl.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -341,6 +343,20 @@ fn trim_name_vectors() {
         trim_name("Intel(R) Core(TM) CPU E5-2670".to_string()),
         "E5-2670"
     );
+    // Intel `!= "@"` guard (src/btop_shared.cpp:59): token after `CPU` is
+    // `@` → arm yields "" → generic fallback (which strips to "" here),
+    // never the literal "@".
+    assert_eq!(trim_name("Intel(R) Core(TM) CPU @ 2.30GHz".to_string()), "");
+}
+
+#[test]
+fn trim_name_intel_at_guard_falls_back() {
+    // Dedicated vector for the `:59` guard: an Intel `CPU @ ...` brand must
+    // not surface "@" as the CPU name; the arm misses and the generic
+    // fallback strips the vendor words (to "" for this input).
+    let out = trim_name("Intel(R) Core(TM) CPU @ 2.30GHz".to_string());
+    assert_ne!(out, "@");
+    assert_eq!(out, "");
     // Generic fallback strips vendor words.
     assert_eq!(trim_name("Apple M1 Pro".to_string()), "M1 Pro");
     assert_eq!(trim_name(String::new()), "");
