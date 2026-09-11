@@ -44,6 +44,8 @@ run_case() { # run_case <name> <extra-args> <keys...> ; keys sent 1.2s apart
 run_case boot ""
 check "boot cpu box" "¹cpu" "$OUT/boot.txt"
 check "boot proc count" "/" "$OUT/boot.txt"
+if grep -Eq '[0-9]{2}:[0-9]{2}:[0-9]{2}' "$OUT/boot.txt"; then echo "PASS: header clock"; PASS=$((PASS+1));
+else echo "FAIL: header clock (no HH:MM:SS)"; FAIL=$((FAIL+1)); fi
 run_case quit-q "" q
 check "quit-q exits" "Quitting! Runtime:" "$OUT/quit-q.txt"
 run_case preset0 "-p 0"
