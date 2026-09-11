@@ -19,6 +19,9 @@ pub trait MacOsBackend {
     fn swap_raw(&mut self) -> Result<(u64, u64, u64), CollectError>;
     /// Returns (blocks, bfree, frsize). `mount` is ignored by ReplayBackend (FIFO regardless).
     fn disk_raw(&mut self, mount: &str) -> Result<(u64, u64, u64), CollectError>;
+    /// Returns seconds since boot (C++ Tools::system_uptime,
+    /// osx/btop_collect.cpp:2057-2066: now - kern.boottime).
+    fn system_uptime(&mut self) -> u64;
     /// Returns (mountpoint, display name) per mounted fs (C++ `found` list,
     /// osx/btop_collect.cpp:1300-1330). ReplayBackend drains a queue.
     fn disk_mounts(&mut self) -> Result<Vec<(String, String)>, CollectError>;
@@ -65,6 +68,7 @@ pub struct ReplayBackend {
     pub gpu_residency_q: VecDeque<Vec<(String, u64, u64)>>,
     pub gpu_energy_q: VecDeque<(u64, EnergyUnit)>,
     pub hid_temps_q: VecDeque<Vec<f64>>,
+    pub uptime_q: VecDeque<u64>,
 }
 
 impl MacOsBackend for ReplayBackend {
@@ -113,6 +117,9 @@ impl MacOsBackend for ReplayBackend {
     }
     fn hid_temps(&mut self) -> Result<Vec<f64>, CollectError> {
         Ok(self.hid_temps_q.pop_front().unwrap_or_default())
+    }
+    fn system_uptime(&mut self) -> u64 {
+        self.uptime_q.pop_front().unwrap_or(0)
     }
 }
 

@@ -580,6 +580,10 @@ fn backend_methods_called_per_box() {
             self.calls.push("gpu_energy".into());
             self.b.gpu_energy()
         }
+        fn system_uptime(&mut self) -> u64 {
+            self.calls.push("system_uptime".into());
+            self.b.system_uptime()
+        }
         fn hid_temps(&mut self) -> Result<Vec<f64>, btop_collect::types::CollectError> {
             self.calls.push("hid_temps".into());
             self.b.hid_temps()
@@ -719,4 +723,25 @@ fn tick_mem_disks_render_names() {
         w.recalc_layout,
         out.out.len(),
     );
+}
+
+#[test]
+fn tick_threads_backend_uptime_into_state() {
+    let mut w = harness_world();
+    let mut s = FakeSys::default();
+    let mut b = fake_backend();
+    b.uptime_q.push_back(398_123);
+    let _ = tick(
+        &mut w,
+        &mut s,
+        TickInput {
+            backend: &mut b,
+            now_ms: 0,
+            pending_resize: false,
+            should_quit: false,
+            force_redraw_in: false,
+            overlay: String::new(),
+        },
+    );
+    assert_eq!(w.state.uptime_secs, 398_123);
 }

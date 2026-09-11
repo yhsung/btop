@@ -1085,6 +1085,32 @@ impl MacOsBackend for RealBackend {
         ))
     }
 
+    // C++ Tools::system_uptime (osx/btop_collect.cpp:2057-2066):
+    // now - kern.boottime({CTL_KERN,KERN_BOOTTIME}={1,21} → timeval).
+    // macOS timeval is tv_sec i64 @0 (C-measured); wall now comes from
+    // std (gettimeofday equivalent). Never fails: 0 on any error.
+    fn system_uptime(&mut self) -> u64 {
+        #[cfg(target_os = "macos")]
+        {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let mib: [i32; 2] = [1, 21];
+            let boot = match sysctl_fetch(&mib) {
+                Ok(buf) if buf.len() >= 8 => {
+                    i64::from_ne_bytes(buf[0..8].try_into().unwrap_or([0; 8]))
+                }
+                _ => return 0,
+            };
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            now.saturating_sub(boot).max(0) as u64
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            0
+        }
+    }
     // C++ osx/btop_collect.cpp:1300-1330: getmntinfo(MNT_NOWAIT) table walk;
     // skip autofs; name = mountpoint filename, root → "root". The
     // disks_filter include/exclude pass lives in apply_disks_filter

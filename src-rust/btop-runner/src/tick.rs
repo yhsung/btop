@@ -265,6 +265,13 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
     let theme = default_theme();
     let mut output = String::new();
     let mut ran_boxes: Vec<String> = Vec::new();
+    // Uptime source for the cpu `up` row (C++ calls Tools::system_uptime()
+    // inside draw; the stateless port threads it through state).
+    w.state.uptime_secs = t.backend.system_uptime();
+    // Refresh per-box flags from Config every tick (C++ reads Config globals
+    // live in draw). Missing keys keep current values via get_b/get_s
+    // fallbacks, so harness-set flags survive sparse configs.
+    w.state.apply_config(&w.config);
 
     // CPU
     if has_cpu && !paused {

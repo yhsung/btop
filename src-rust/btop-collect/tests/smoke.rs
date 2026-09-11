@@ -86,3 +86,10 @@ fn smoke_mem_net_proc_live_no_panic() {
     let procs = b.proc_list().expect("proc_list live");
     assert!(!procs.is_empty());
 }
+
+#[test]
+fn smoke_system_uptime_live_positive() {
+    let mut b = RealBackend::new();
+    // Any booted machine has uptime > 0; 0 means the sysctl path failed.
+    assert!(b.system_uptime() > 0, "kern.boottime probe live");
+}
