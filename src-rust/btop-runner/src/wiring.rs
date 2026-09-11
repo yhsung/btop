@@ -82,7 +82,10 @@ impl SignalFlags {
         Self::default()
     }
 
-    /// Clear every flag (main-loop drain + test helper). All stores use
+    /// Clear the per-tick signal flags (main-loop drain + test helper).
+    /// `quitting` is deliberately EXCLUDED: it is the T6 `clean_quit`
+    /// re-entrancy guard ("exit already in progress"), and draining it
+    /// would let a second exit path re-enter cleanup. All stores use
     /// `Ordering::SeqCst`: the port is single-threaded, but SeqCst keeps
     /// handler/loop/test ordering total without measurable cost here.
     pub fn clear_all(&self) {
@@ -94,7 +97,6 @@ impl SignalFlags {
             &self.interrupt_input,
             &self.reload_conf,
             &self.stopping,
-            &self.quitting,
         ] {
             flag.store(false, AtomicOrdering::SeqCst);
         }

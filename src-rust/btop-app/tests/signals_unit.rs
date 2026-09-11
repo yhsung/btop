@@ -4,7 +4,7 @@
 //! `MockInstaller` / `MockCrashEnv` / `MockAtExit` doubles; no test
 //! delivers a real signal, installs a real sigaction, or calls `raise`.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use btop_app::signals::{
@@ -116,7 +116,9 @@ fn sigusr2_sets_reload_conf_and_wakes_poll() {
 }
 
 #[test]
-fn clear_all_resets_every_flag() {
+fn clear_all_resets_tick_flags_but_preserves_quitting() {
+    // `quitting` is the T6 `clean_quit` re-entrancy guard — `clear_all`
+    // must not drain it, or a second exit path could re-enter cleanup.
     let f = flags();
     on_sigint(&f);
     on_sigwinch(&f);
@@ -124,16 +126,23 @@ fn clear_all_resets_every_flag() {
     f.quitting.store(true, Ordering::SeqCst);
     assert!(!all_clear(&f));
     f.clear_all();
-    assert!(all_clear(&f));
+    assert!(!load(&f.resized));
+    assert!(!load(&f.should_quit));
+    assert!(!load(&f.should_sleep));
+    assert!(!load(&f.do_continue));
+    assert!(!load(&f.interrupt_input));
+    assert!(!load(&f.reload_conf));
+    assert!(!load(&f.stopping));
+    assert!(load(&f.quitting), "clear_all must preserve quitting");
 }
 
 #[test]
 fn mock_install_records_call_and_succeeds() {
     let mock = MockInstaller::new();
     let f = flags();
-    assert!(install_signals(&mock, &f).is_ok());
+    assert!(install_signals(&mock, f.clone()).is_ok());
     assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
-    assert!(install_signals(&mock, &f).is_ok());
+    assert!(install_signals(&mock, f).is_ok());
     assert_eq!(mock.calls.load(Ordering::SeqCst), 2);
 }
 
@@ -142,7 +151,7 @@ fn mock_install_failure_path_propagates() {
     let mock = MockInstaller::new();
     mock.set_fail(true);
     let f = flags();
-    let err = install_signals(&mock, &f).unwrap_err();
+    let err = install_signals(&mock, f).unwrap_err();
     assert!(!err.is_empty());
     assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
 }
@@ -158,6 +167,7 @@ fn crash_restores_term_when_initialized() {
     let env = MockCrashEnv::new(true);
     btop_app::signals::on_crash(&env, Signal::SIGSEGV as i32);
     assert_eq!(env.restore_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(env.reset_sig.load(Ordering::SeqCst), Signal::SIGSEGV as i32);
     assert_eq!(env.raised.load(Ordering::SeqCst), Signal::SIGSEGV as i32);
 }
 
@@ -166,12 +176,26 @@ fn crash_skips_restore_when_uninitialized() {
     let env = MockCrashEnv::new(false);
     btop_app::signals::on_crash(&env, Signal::SIGABRT as i32);
     assert_eq!(env.restore_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(env.reset_sig.load(Ordering::SeqCst), Signal::SIGABRT as i32);
     assert_eq!(env.raised.load(Ordering::SeqCst), Signal::SIGABRT as i32);
 }
 
 #[test]
+fn crash_resets_disposition_before_raise() {
+    // btop.cpp:286-287: reset to SIG_DFL must precede the re-raise, or
+    // the raised signal re-enters the crash handler (infinite recursion).
+    // The reset runs even when the term is uninitialized.
+    for initialized in [true, false] {
+        let env = MockCrashEnv::new(initialized);
+        btop_app::signals::on_crash(&env, Signal::SIGBUS as i32);
+        assert_eq!(env.reset_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(env.events(), vec!["reset", "raise"]);
+    }
+}
+
+#[test]
 fn crash_signal_list_matches_cpp_install_block() {
-    // src/btop.cpp:1059-1063 install block: SIGSEGV, SIGABRT, SIGTRAP,
+    // src/btop.cpp:1056-1060 install block: SIGSEGV, SIGABRT, SIGTRAP,
     // SIGBUS, SIGILL.
     assert_eq!(
         CRASH_SIGNALS,
@@ -248,6 +272,4 @@ fn doubles_are_object_safe() {
     assert_installer::<MockInstaller>();
     assert_installer::<RealInstaller>();
     assert_crash::<MockCrashEnv>();
-    let _ = AtomicU32::new(0);
-    let _ = AtomicI32::new(0);
 }

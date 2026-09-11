@@ -1,8 +1,10 @@
 //! Signal handlers with mockable install (P4 T4).
 //!
-//! C++ truth: install block at `src/btop.cpp:1047-1065`, `_signal_handler`
-//! at `:290-322`, `_crash_handler`, `_exit_handler` at `:276-278`
-//! (`clean_quit(-1)`), `_sleep` at `:264-269`, `_resume` at `:271-274`.
+//! C++ truth: install block at `src/btop.cpp:1048-1065`, `_signal_handler`
+//! at `:290-322`, `_crash_handler` at `:280-288`
+//! (`signal(sig, SIG_DFL)` + `raise(sig)` at `:286-287`), `_exit_handler`
+//! at `:276-278` (`clean_quit(-1)`), `_sleep` at `:264-269`,
+//! `_resume` at `:271-274`.
 //!
 //! Signal→flag table (see [`SignalFlags`] fields for per-flag notes):
 //!
@@ -15,16 +17,21 @@
 //! | SIGUSR1  | no-op ("Input::poll interrupt", :319-321) | `interrupt_input` (poll wake) |
 //! | SIGUSR2  | `reload_conf=true`, `Input::interrupt()` (:322-325) | `reload_conf`, `interrupt_input` |
 //!
-//! Crash signals (install block :1059-1063): SIGSEGV, SIGABRT, SIGTRAP,
-//! SIGBUS, SIGILL → [`on_crash`] (restore term if initialized + re-raise,
-//! mirroring `_crash_handler`).
+//! Crash signals (install block :1056-1060): SIGSEGV, SIGABRT, SIGTRAP,
+//! SIGBUS, SIGILL → [`on_crash`] (restore term if initialized, reset the
+//! handler to `SIG_DFL`, re-raise — mirroring `_crash_handler`).
+//! The restore path is best-effort (not strictly async-signal-safe),
+//! same as upstream — see [`on_crash`].
 //!
 //! # Handler safety
 //!
-//! The `on_*` fns only perform atomic stores (`Ordering::SeqCst`) on the
+//! The `on_sig*` fns only perform atomic stores (`Ordering::SeqCst`) on the
 //! passed [`SignalFlags`] — no allocation, no locking, no I/O — so they
 //! are async-signal-safe and may run in real signal context via the
-//! `extern "C"` trampolines installed by [`RealInstaller`]. The
+//! `extern "C"` trampolines installed by [`RealInstaller`]. [`on_crash`]
+//! is deliberately excluded from that claim: like the C++ `_crash_handler`
+//! it restores the terminal (ioctl/write), which is best-effort rather
+//! than strictly async-signal-safe — same as upstream. The
 //! trampolines additionally read two lock-free globals ([`HANDLER_FLAGS`]
 //! via [`handler_flags`], [`CRASH_TERM_PTR`]); both are plain
 //! atomic-pointer loads, likewise signal-safe. Everything else (term
@@ -93,38 +100,52 @@ pub fn on_sigusr2(flags: &SignalFlags) {
 /// Flags published at install for the `extern "C"` trampolines.
 /// `AtomicPtr` load/store is async-signal-safe; the pointed-to
 /// `SignalFlags` only performs atomic ops, so dereferencing in a handler
-/// is sound while the boot scope that owns the `Arc<SignalFlags>` is
-/// alive (which is until process exit — see SAFETY on [`publish_flags`]).
+/// is sound while the owning [`OWNING_FLAGS`] entry is alive.
 static HANDLER_FLAGS: AtomicPtr<SignalFlags> = AtomicPtr::new(std::ptr::null_mut());
 
 /// Term published at install for the crash trampoline (null = no term;
-/// restore is skipped but the signal is still re-raised).
+/// restore is skipped but the reset + re-raise still run).
 static CRASH_TERM_PTR: AtomicPtr<TermWrapper> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Owning refs that keep the trampoline pointees alive for process
+/// lifetime. The type system enforces this: [`publish_flags`] takes
+/// `Arc`s (not borrows), clones them here, and never removes them, so a
+/// short-lived caller `Arc` cannot leave a dangling trampoline pointer.
+/// These are only locked at install time (never in signal context).
+static OWNING_FLAGS: Mutex<Option<Arc<SignalFlags>>> = Mutex::new(None);
+static OWNING_TERM: Mutex<Option<Arc<TermWrapper>>> = Mutex::new(None);
 
 /// Publish handler state for the trampolines.
 ///
-/// # Safety
-/// The caller must guarantee `flags` (and `term`, if given) outlive any
-/// delivered signal. In practice [`RealInstaller::install`] is called
-/// once at boot with the process-lifetime `Arc<SignalFlags>` /
-/// `Arc<TermWrapper>`, which satisfies this trivially.
-fn publish_flags(flags: &SignalFlags, term: Option<&Arc<TermWrapper>>) {
-    HANDLER_FLAGS.store(
-        flags as *const SignalFlags as *mut SignalFlags,
-        Ordering::SeqCst,
-    );
-    let ptr = term.map_or_else(std::ptr::null_mut, |t| Arc::as_ptr(t) as *mut TermWrapper);
-    CRASH_TERM_PTR.store(ptr, Ordering::SeqCst);
+/// Takes shared ownership (`Arc`) and stashes a clone in the owning
+/// statics, so the raw pointers in [`HANDLER_FLAGS`]/[`CRASH_TERM_PTR`]
+/// stay valid as long as any signal can be delivered. Call once at boot
+/// (via [`RealInstaller::install`]) with the process-lifetime flags/term.
+fn publish_flags(flags: Arc<SignalFlags>, term: Option<Arc<TermWrapper>>) {
+    let flags_ptr = Arc::as_ptr(&flags) as *mut SignalFlags;
+    let term_ptr = term
+        .as_ref()
+        .map_or_else(std::ptr::null_mut, |t| Arc::as_ptr(t) as *mut TermWrapper);
+    // Store owners first so the pointers are valid before they become
+    // visible to handlers. `expect` is fine: install never runs in
+    // signal context, and a poisoned boot mutex is unrecoverable.
+    *OWNING_FLAGS
+        .lock()
+        .expect("signal flags owner slot poisoned") = Some(flags);
+    *OWNING_TERM.lock().expect("crash term owner slot poisoned") = term;
+    HANDLER_FLAGS.store(flags_ptr, Ordering::SeqCst);
+    CRASH_TERM_PTR.store(term_ptr, Ordering::SeqCst);
 }
 
 /// Flags for the current trampoline, if published.
 fn handler_flags() -> Option<&'static SignalFlags> {
-    // SAFETY: null-checked; non-null implies a live boot-owned allocation
-    // per the `publish_flags` contract.
+    // SAFETY: null-checked; non-null implies a live allocation owned by
+    // `OWNING_FLAGS`, which `publish_flags` never removes.
     unsafe { HANDLER_FLAGS.load(Ordering::SeqCst).as_ref() }
 }
 
-/// Term for the crash trampoline, if published and alive (same contract).
+/// Term for the crash trampoline, if published and alive (same contract
+/// via `OWNING_TERM`).
 fn crash_term() -> Option<&'static TermWrapper> {
     unsafe { CRASH_TERM_PTR.load(Ordering::SeqCst).as_ref() }
 }
@@ -173,13 +194,16 @@ extern "C" fn crash_trampoline(sig: c_int) {
 // ── Installer ─────────────────────────────────────────────────────────────
 
 /// Mockable signal-install seam. Production boot passes
-/// [`RealInstaller`]; tests pass [`MockInstaller`].
+/// [`RealInstaller`]; tests pass [`MockInstaller`]. `install` takes an
+/// `Arc` (not a borrow) so the production impl can transfer shared
+/// ownership into the trampoline globals — see [`publish_flags`].
 pub trait SignalInstaller: Send + Sync {
-    fn install(&self, flags: &SignalFlags) -> Result<(), String>;
+    fn install(&self, flags: Arc<SignalFlags>) -> Result<(), String>;
 }
 
 /// Production installer: `sigaction` per the C++ install block
-/// (btop.cpp:1047-1065) + SIGUSR1 process-mask block (:1060-1063).
+/// (btop.cpp:1048-1065: regular :1049-1054) + crash handlers (:1056-1060)
+/// + SIGUSR1 process-mask block (:1062-1065).
 pub struct RealInstaller {
     term: Option<Arc<TermWrapper>>,
 }
@@ -216,20 +240,20 @@ fn install_sigaction(sig: Signal, handler: extern "C" fn(c_int)) -> Result<(), S
 }
 
 impl SignalInstaller for RealInstaller {
-    fn install(&self, flags: &SignalFlags) -> Result<(), String> {
-        publish_flags(flags, self.term.as_ref());
-        // btop.cpp:1048-1053: regular handlers.
+    fn install(&self, flags: Arc<SignalFlags>) -> Result<(), String> {
+        publish_flags(flags, self.term.clone());
+        // btop.cpp:1049-1054: regular handlers.
         install_sigaction(Signal::SIGINT, sigint_trampoline)?;
         install_sigaction(Signal::SIGTSTP, sigtstp_trampoline)?;
         install_sigaction(Signal::SIGCONT, sigcont_trampoline)?;
         install_sigaction(Signal::SIGWINCH, sigwinch_trampoline)?;
         install_sigaction(Signal::SIGUSR1, sigusr1_trampoline)?;
         install_sigaction(Signal::SIGUSR2, sigusr2_trampoline)?;
-        // btop.cpp:1059-1063: crash handlers.
+        // btop.cpp:1056-1060: crash handlers.
         for sig in CRASH_SIGNALS {
             install_sigaction(sig, crash_trampoline)?;
         }
-        // btop.cpp:1060-1063: block SIGUSR1 so it only wakes `pselect`
+        // btop.cpp:1062-1065: block SIGUSR1 so it only wakes `pselect`
         // (T7 applies the same mask at the poll site).
         let mask = sigusr1_block_mask();
         nix::sys::signal::sigprocmask(SigmaskHow::SIG_BLOCK, Some(&mask), None)
@@ -264,7 +288,7 @@ impl Default for MockInstaller {
 }
 
 impl SignalInstaller for MockInstaller {
-    fn install(&self, _flags: &SignalFlags) -> Result<(), String> {
+    fn install(&self, _flags: Arc<SignalFlags>) -> Result<(), String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail.load(Ordering::SeqCst) {
             Err("mock install failure".to_string())
@@ -275,11 +299,14 @@ impl SignalInstaller for MockInstaller {
 }
 
 /// Boot seam: install via the given installer (real or mock).
-pub fn install_signals(installer: &dyn SignalInstaller, flags: &SignalFlags) -> Result<(), String> {
+pub fn install_signals(
+    installer: &dyn SignalInstaller,
+    flags: Arc<SignalFlags>,
+) -> Result<(), String> {
     installer.install(flags)
 }
 
-/// The SIGUSR1 mask from the C++ install block (btop.cpp:1060-1063).
+/// The SIGUSR1 mask from the C++ install block (btop.cpp:1062-1065).
 /// [`RealInstaller`] applies it process-wide; T7's `pselect` uses the
 /// same set as its wait mask.
 pub fn sigusr1_block_mask() -> SigSet {
@@ -291,7 +318,7 @@ pub fn sigusr1_block_mask() -> SigSet {
 // ── Crash path ────────────────────────────────────────────────────────────
 
 /// Crash signals installed alongside the regular handlers
-/// (btop.cpp:1059-1063, verbatim order).
+/// (btop.cpp:1056-1060, verbatim order).
 pub const CRASH_SIGNALS: [Signal; 5] = [
     Signal::SIGSEGV,
     Signal::SIGABRT,
@@ -300,12 +327,20 @@ pub const CRASH_SIGNALS: [Signal; 5] = [
     Signal::SIGILL,
 ];
 
-/// Testable crash environment: term restore + re-raise, mirroring
-/// `_crash_handler` ("restore terminal before crashing … re-raise the
-/// signal to get default behavior").
+/// Testable crash environment: term restore + reset-to-default + re-raise,
+/// mirroring `_crash_handler` ("restore terminal before crashing … re-raise
+/// the signal to get default behavior", btop.cpp:280-288).
+///
+/// The restore step is best-effort (not strictly async-signal-safe — it
+/// performs terminal ioctl/write), same as upstream; the reset + raise
+/// steps are signal-safe.
 pub trait CrashEnv: Send + Sync {
     fn term_initialized(&self) -> bool;
     fn restore_term(&self);
+    /// Reset the crashing signal's disposition to `SIG_DFL` (btop.cpp:286).
+    /// Must run before [`CrashEnv::reraise`]: without it the re-raised
+    /// signal would re-enter the crash trampoline (infinite recursion).
+    fn reset_default(&self, sig: c_int);
     fn reraise(&self, sig: c_int);
 }
 
@@ -325,6 +360,10 @@ impl CrashEnv for RealCrashEnv {
         }
     }
 
+    fn reset_default(&self, sig: c_int) {
+        reset_crash_disposition(sig);
+    }
+
     fn reraise(&self, sig: c_int) {
         // `libc::raise` is async-signal-safe; nix only wraps it.
         // The `Signal` round-trip documents intent; fall back to the raw
@@ -339,12 +378,37 @@ impl CrashEnv for RealCrashEnv {
     }
 }
 
-/// Recording test double: no real restore (beyond the flag) and no real
-/// raise — the signal number is recorded instead.
+/// Reset a crashing signal's disposition to `SIG_DFL` (btop.cpp:286),
+/// best-effort: errors are ignored because the subsequent re-raise is
+/// unconditional. Extracted as a free fn (rather than inline in
+/// [`RealCrashEnv::reset_default`]) so its construction is unit-visible;
+/// never call it from tests with a live signal — it would disarm the
+/// test process's own disposition.
+fn reset_crash_disposition(sig: c_int) {
+    if let Ok(sig) = Signal::try_from(sig) {
+        let action = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+        // SAFETY: installing `SigDfl` performs no user-code execution;
+        // the args only describe the default disposition.
+        let _ = unsafe { sigaction(sig, &action) };
+    } else {
+        // Raw number outside nix's `Signal` enum (trap-like values):
+        // fall back to `libc::signal`, also async-signal-safe.
+        unsafe {
+            nix::libc::signal(sig, nix::libc::SIG_DFL);
+        }
+    }
+}
+
+/// Recording test double: no real restore (beyond the flag), no real
+/// reset, no real raise — the signal number and the reset→raise order
+/// are recorded instead (see [`MockCrashEnv::events`]).
 pub struct MockCrashEnv {
     initialized: AtomicBool,
     pub restore_calls: AtomicU32,
     pub raised: AtomicI32,
+    pub reset_calls: AtomicU32,
+    pub reset_sig: AtomicI32,
+    events: Mutex<Vec<&'static str>>,
 }
 
 impl MockCrashEnv {
@@ -353,7 +417,16 @@ impl MockCrashEnv {
             initialized: AtomicBool::new(initialized),
             restore_calls: AtomicU32::new(0),
             raised: AtomicI32::new(-1),
+            reset_calls: AtomicU32::new(0),
+            reset_sig: AtomicI32::new(-1),
+            events: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Recorded `"reset"`/`"raise"` markers in call order; the crash
+    /// contract is `["reset", "raise"]`.
+    pub fn events(&self) -> Vec<&'static str> {
+        self.events.lock().expect("mock events poisoned").clone()
     }
 }
 
@@ -366,17 +439,38 @@ impl CrashEnv for MockCrashEnv {
         self.restore_calls.fetch_add(1, Ordering::SeqCst);
     }
 
+    fn reset_default(&self, sig: c_int) {
+        self.reset_calls.fetch_add(1, Ordering::SeqCst);
+        self.reset_sig.store(sig, Ordering::SeqCst);
+        self.events
+            .lock()
+            .expect("mock events poisoned")
+            .push("reset");
+    }
+
     fn reraise(&self, sig: c_int) {
         self.raised.store(sig, Ordering::SeqCst);
+        self.events
+            .lock()
+            .expect("mock events poisoned")
+            .push("raise");
     }
 }
 
 /// Crash body shared by the trampoline and tests: restore the term iff
-/// initialized, then re-raise unconditionally.
+/// initialized, then reset the disposition to `SIG_DFL` and re-raise
+/// unconditionally.
+///
+/// Mirrors the C++ `_crash_handler` (btop.cpp:280-288); like upstream,
+/// the restore step is best-effort (not strictly async-signal-safe),
+/// while reset + raise are signal-safe.
 pub fn on_crash(env: &dyn CrashEnv, sig: c_int) {
     if env.term_initialized() {
         env.restore_term();
     }
+    // Reset-before-raise (btop.cpp:286-287): re-raising with the crash
+    // trampoline still installed would re-enter `on_crash` forever.
+    env.reset_default(sig);
     env.reraise(sig);
 }
 
@@ -386,6 +480,10 @@ pub fn on_crash(env: &dyn CrashEnv, sig: c_int) {
 /// at btop.cpp:276-278) reduced to what T4 owns — restore the term and
 /// mark `quitting` so a second exit path becomes a no-op. T6's
 /// `clean_quit` subsumes this once it lands.
+///
+/// STUB: do not wire [`RealAtExit`] to real `atexit` at boot until T6
+/// `clean_quit` lands — this only restores the term and flips `quitting`,
+/// it is not the full `clean_quit(-1)` shutdown.
 pub struct AtExitHook {
     flags: Arc<SignalFlags>,
     term: Arc<TermWrapper>,
@@ -397,6 +495,8 @@ impl AtExitHook {
     }
 
     pub fn run(self) {
+        // STUB (see struct docs): term restore + `quitting` only — not the
+        // full T6 `clean_quit(-1)` shutdown.
         if self.term.is_initialized() {
             self.term.restore();
         }
@@ -428,7 +528,7 @@ extern "C" fn atexit_trampoline() {
 }
 
 /// Production registrar: stages the hook and registers the trampoline
-/// with `atexit` (mirrors `std::atexit(_exit_handler)` at btop.cpp:1047).
+/// with `atexit` (mirrors `std::atexit(_exit_handler)` at btop.cpp:1048).
 pub struct RealAtExit;
 
 impl AtExitRegistrar for RealAtExit {
