@@ -28,6 +28,7 @@
 * [Documents](#documents)
 * [Description](#description)
 * [Features](#features)
+* [Rust port — feature parity](#rust-port--feature-parity)
 * [Themes](#themes)
 * [Support and funding](#support-and-funding)
 * [Prerequisites](#prerequisites) (Read this if you are having issues!)
@@ -232,6 +233,36 @@ C++ version and continuation of [bashtop](https://github.com/aristocratos/bashto
 * Selectable symbols for the graphs.
 * Custom presets
 * And more...
+
+## Rust port — feature parity
+
+This fork carries a from-scratch Rust port in [`src-rust/`](src-rust/)
+(workspace crates `btop-app/cli/collect/config/draw/input/menu/runner/tools`).
+The C++ tree is the truth source: every ported behavior cites its `src/`
+line numbers, and parity is checked live against `/opt/homebrew/bin/btop`
+via the tmux harness in [`scripts/parity/`](scripts/parity/)
+(`capture.sh` dual-pane diff, `keys.sh` CLI + key matrix — currently **15/15**).
+
+Build it: `cargo build --release -p btop-app --locked --offline` (from `src-rust/`).
+
+| Area | Status | Verified by |
+|---|---|---|
+| Box layout, graphs, titles (cpu/mem/net/proc) | ✅ live parity | `capture.sh` diffs |
+| Proc list: user, full cmd, nice, filter, all 8 sorts | ✅ live parity | `capture.sh`, `keys.sh` filter/sort |
+| Proc tree: ppid, prefixes, collapse/expand (`space/+/-/C/E`), aggregate, cpu-direct sort | ✅ live parity (v0.2) | `keys.sh` tree-e/tree-collapse, 7 tree unit tests |
+| Net per-iface IP in title | ✅ live parity | `capture.sh` (titles identical) |
+| Header clock (`%X`, per-second, centered) | ✅ live parity | `keys.sh` header clock |
+| CLI printers (`--help/--version/--default-config`, error lines) | ✅ `--help` byte-identical; `--default-config` 87 keys, zero diffs | `keys.sh` cli-* |
+| Menus + options (keyboard nav, help/signal/preset overlays) | ✅ keyboard parity | `keys.sh` help overlay |
+| Proc detail pane | 🟡 unit-tested only | draw/runner goldens |
+| Mouse (click/scroll/buttons) | 🟡 decode + hit-maps done, dispatch pending | `btop-input` unit tests |
+| Header menu interactivity | ❌ deferred | — |
+| GPU panels | ❌ deferred | — |
+| Theme-file loading (compiled-in Default only) | ❌ deferred | — |
+
+Gates: `cargo test --workspace --locked --offline` (555 tests / 32 suites),
+`cargo clippy` (pinned nightly-2025-02-16 **and** latest stable, `-D warnings`),
+`cargo fmt --check`. See [AGENTS.md](AGENTS.md) for the workflow.
 
 ## Themes
 
