@@ -1,9 +1,11 @@
-#![cfg(target_os = "macos")]
 //! Local-only recorder: prints one JSON snapshot of raw backend values.
 //! NEVER run in CI. Usage: cargo run -p btop-collect --example record > src-rust/fixtures/osx/cpu.json
+#[cfg(target_os = "macos")]
 use btop_collect::backend::MacOsBackend;
+#[cfg(target_os = "macos")]
 use btop_collect::real::RealBackend;
 
+#[cfg(target_os = "macos")]
 fn main() {
     let mut b = RealBackend::new();
     let ticks = b.cpu_ticks().unwrap_or_default();
@@ -20,4 +22,12 @@ fn main() {
         avg[0], avg[1], avg[2]
     ));
     println!("{out}");
+}
+
+// Stub so `cargo test --workspace` (which builds examples) compiles on
+// non-macOS targets. The recorder reads macOS-only sysctls.
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!("record example is macOS-only");
+    std::process::exit(1);
 }
