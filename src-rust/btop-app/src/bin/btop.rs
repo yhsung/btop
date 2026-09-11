@@ -235,6 +235,15 @@ fn main() {
         sleeper: &mut sleeper,
         max_iters: None,
     };
+    // Boot enters the loop with `resized` set: the first iteration takes
+    // the :1138-1146 arm (calcSizes + forced full tick with redraw), which
+    // draws the per-tick inner boxes and titles. Without this the opening
+    // scheduled tick runs content-only and box interiors stay blank.
+    // (C++ boots through `term_resize(true)` + a forced first run.)
+    world
+        .signal_flags
+        .resized
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     match main_loop(&mut world, env, update_ms, future_time) {
         // C++ calls `clean_quit(0)` on every loop-produced quit path.
         LoopExit::Quit(sig) => clean_quit(sig, &mut world, &term),

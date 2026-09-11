@@ -1111,13 +1111,21 @@ impl MacOsBackend for RealBackend {
         for i in 0..n_structs {
             let chunk = &buf[i * 648..(i + 1) * 648];
             let pid = read_i32(chunk, 40);
-            if pid < 1 {
-                continue;
-            }
+            // Mirror C++ (osx/btop_collect.cpp:proc loop): entries are kept
+            // even when PROC_PIDTASKINFO fails (zombies, SIP-denied) — with
+            // threads/mem zeroed — and only dropped when dead (absent from
+            // a later sysctl round, handled tick-side). No pid filter: pid 0
+            // sorts last on zero stats, same as upstream.
             let rc = unsafe { proc_pidinfo(pid, PROC_PIDTASKINFO, 0, ti.as_mut_ptr(), 96) };
-            if rc as usize != 96 {
-                continue;
-            }
+            let (ticks, mem, threads) = if rc as usize != 96 {
+                (0, 0, 0)
+            } else {
+                (
+                    read_u64(&ti, 16).wrapping_add(read_u64(&ti, 24)),
+                    read_u64(&ti, 8),
+                    read_i32(&ti, 84).max(0) as u64,
+                )
+            };
             let prc = unsafe { proc_pidpath(pid, path.as_mut_ptr(), 4096) };
             let name = if prc > 0 {
                 basename_of(&path[..prc as usize])
@@ -1127,9 +1135,9 @@ impl MacOsBackend for RealBackend {
             out.push(ProcRaw {
                 pid: pid as u64,
                 name,
-                cpu_ticks: read_u64(&ti, 16).wrapping_add(read_u64(&ti, 24)),
-                mem_bytes: read_u64(&ti, 8),
-                threads: read_i32(&ti, 84).max(0) as u64,
+                cpu_ticks: ticks,
+                mem_bytes: mem,
+                threads,
             });
         }
         Ok(out)

@@ -167,6 +167,12 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
     // inputs each take `force_redraw` explicitly (proc is the only one
     // currently threaded here; the rest use Theme state — see
     // `assemble_cpu/mem/net` for the no_update/force_redraw plumbing).
+    // Fan the in-flag out to the shared AppState slot the assemblers read:
+    // assignment (not OR) consumes it, so a forced tick redraws boxes once
+    // and the following scheduled ticks go back to content-only. Placed
+    // after the early-return gate so a skipped tick never eats a pending
+    // redraw request.
+    w.state.force_redraw = t.force_redraw_in;
     let force_redraw = t.force_redraw_in;
     let update_ms = w.config.get_i("update_ms").unwrap_or(2000).max(100) as u64;
 

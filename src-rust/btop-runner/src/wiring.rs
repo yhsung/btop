@@ -622,6 +622,20 @@ pub fn assemble_net<'a>(
 ) -> NetDrawInput<'a> {
     // Full interface list every tick — Task 3 CycleIface cycles it.
     state.net_interfaces = counters.iter().map(|(n, _, _)| n.clone()).collect();
+    // C++ (osx/btop_collect.cpp:1614+): empty/invalid selection latches to
+    // highest total traffic (upstream prefers connected; counters carry no
+    // flags, and the busiest interface is the connected one in practice).
+    // Latching keeps the display sticky like `selected_iface` upstream.
+    if state.selected_iface.is_empty()
+        || !counters.iter().any(|(n, _, _)| *n == state.selected_iface)
+    {
+        if let Some((name, _, _)) = counters
+            .iter()
+            .max_by_key(|(_, d, u)| d.saturating_add(*u))
+        {
+            state.selected_iface = name.clone();
+        }
+    }
     let pick = counters
         .iter()
         .position(|(n, _, _)| *n == state.selected_iface)
@@ -632,13 +646,21 @@ pub fn assemble_net<'a>(
         let (rd, ru) = state.net_rollover.get(&name).copied().unwrap_or((0, 0));
         let (od, ou) = state.net_offset.get(&name).copied().unwrap_or((0, 0));
         let (td, tu) = state.net_top.get(&name).copied().unwrap_or((0, 0));
-        // `update_counter` 4-tuple wired with the caller-owned lifecycle:
-        // every returned rollover/offset is persisted back below.
-        // Cold start (no entry): last = 0, so the first speed is the
-        // delta-from-zero — same as the C++ zero-initialised stat; P4 may
-        // add a priming tick.
-        let (speed_d, total_d, roll_d, off_d) = update_counter(down, ld, rd, od, dt_ms);
-        let (speed_u, total_u, roll_u, off_u) = update_counter(up, lu, ru, ou, dt_ms);
+        // Cold start (no entry): prime the pump — record the baseline and
+        // report speed 0. C++ gets this for free: its first `dt` is
+        // ~epoch-sized (`timestamp` starts 0), so the opening speed is ~0
+        // and `top` never latches the delta-from-zero spike.
+        let priming = !state.net_last.contains_key(&name);
+        let (speed_d, total_d, roll_d, off_d) = if priming {
+            (0, down, 0, 0)
+        } else {
+            update_counter(down, ld, rd, od, dt_ms)
+        };
+        let (speed_u, total_u, roll_u, off_u) = if priming {
+            (0, up, 0, 0)
+        } else {
+            update_counter(up, lu, ru, ou, dt_ms)
+        };
         let top_d = track_top(speed_d, td);
         let top_u = track_top(speed_u, tu);
         state.net_last.insert(name.clone(), (down, up));
@@ -1127,10 +1149,44 @@ mod tests {
     }
 
     #[test]
+    fn net_first_tick_primes_speed_zero_total_is_val() {
+        let mut s = AppState::default();
+        let c = vec![("en1".to_string(), 1_600_000_000u64, 3_600_000_000u64)];
+        let input = assemble_net(&mut s, &c, 2000, 50);
+        // No delta-from-zero spike: speed 0, top stays 0, total is the raw
+        // counter. Selection latched to the only interface.
+        assert_eq!(input.stat.get("download").unwrap().speed, 0);
+        assert_eq!(input.stat.get("download").unwrap().top, 0);
+        assert_eq!(input.stat.get("download").unwrap().total, 1_600_000_000);
+        drop(input);
+        assert_eq!(s.selected_iface, "en1");
+        // Second tick with a small delta reports the real speed.
+        let c2 = vec![("en1".to_string(), 1_600_004_000u64, 3_600_004_000u64)];
+        let input2 = assemble_net(&mut s, &c2, 2000, 50);
+        assert_eq!(input2.stat.get("download").unwrap().speed, 2000);
+        assert_eq!(input2.stat.get("download").unwrap().top, 2000);
+        drop(input2);
+    }
+
+    #[test]
+    fn net_auto_pick_selects_busiest_interface() {
+        let mut s = AppState::default();
+        let c = vec![
+            ("lo0".to_string(), 400u64, 400u64),
+            ("en1".to_string(), 1_000_000u64, 2_000_000u64),
+        ];
+        let _ = assemble_net(&mut s, &c, 1000, 50);
+        assert_eq!(s.selected_iface, "en1");
+    }
+
+    #[test]
     fn net_offset_persists_and_resets() {
         let mut s = AppState::default();
         s.selected_iface = "eth0".to_string();
         s.net_offset.insert("eth0".to_string(), (500, 0));
+        // Mid-session fixture: baseline already primed (priming only fires
+        // with no net_last entry, i.e. true cold start).
+        s.net_last.insert("eth0".to_string(), (1_000_000, 0));
         let c = vec![("eth0".to_string(), 1_002_000u64, 0u64)];
         let input = assemble_net(&mut s, &c, 1000, 50);
         let total = input.stat.get("download").unwrap().total;
