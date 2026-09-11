@@ -94,6 +94,7 @@ fn fake_backend() -> ReplayBackend {
         ppid: 0,
         cpu_s: 0,
         cpu_c: 0.0,
+        state: 2,
     }]);
     b
 }

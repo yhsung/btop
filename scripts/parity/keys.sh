@@ -64,6 +64,8 @@ run_case tree-e "" e
 check "tree toggle" "[-]─1" "$OUT/tree-e.txt"
 run_case tree-collapse "" e E
 check "tree collapse-all" "[+]─" "$OUT/tree-collapse.txt"
+run_case detail-enter "" Down Enter
+check "detail pane" "Status:" "$OUT/detail-enter.txt"
 
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

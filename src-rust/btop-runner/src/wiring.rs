@@ -23,6 +23,27 @@ use btop_draw::mem::{DiskDraw, MemDrawInput, MemFlags};
 use btop_draw::net::{NetDrawInput, NetFlags, NetStat};
 use btop_draw::proc_::{matches_filter, ProcDetail, ProcDrawInput, ProcFlags, ProcInfo};
 use btop_tools::mouse::MouseMap;
+use btop_tools::strtools::{floating_humanizer, sec_to_dhms, HumanOpts};
+
+/// `get_status` (osx/btop_collect.cpp:1677-1685): bitmask chain over the
+/// `p_stat` char (SIDL=1, SRUN=2, SSLEEP=3, SSTOP=4, SZOMB=5,
+/// sys/proc.h:148-152). Literal port, quirks included (the masks overlap
+/// the enum values, e.g. SSLEEP sets SRUN's bit and reads "Running").
+fn proc_status(s: u8) -> &'static str {
+    if s & 2 != 0 {
+        "Running"
+    } else if s & 3 != 0 {
+        "Sleeping"
+    } else if s & 1 != 0 {
+        "Idle"
+    } else if s & 4 != 0 {
+        "Stopped"
+    } else if s & 5 != 0 {
+        "Zombie"
+    } else {
+        "Unknown"
+    }
+}
 use std::cmp::Ordering;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -246,6 +267,10 @@ pub struct AppState {
     pub detail_cpu: VecDeque<i64>,
     pub detail_mem: VecDeque<i64>,
     pub detail: Option<ProcDetail>,
+    /// Last `proc_pid_rusage` totals for the detailed pid (tick-stashed
+    /// before assemble; `None` = closed or failed → keep previous strings,
+    /// osx:1731-1735).
+    pub detail_io: Option<(u64, u64)>,
     pub per_core: bool,
     pub proc_flags: ProcFlags,
     // shared
@@ -361,6 +386,7 @@ impl Default for AppState {
             detail_cpu: VecDeque::new(),
             detail_mem: VecDeque::new(),
             detail: None,
+            detail_io: None,
             per_core: false,
             proc_flags: ProcFlags::harness_defaults(),
             hist: HistoryStore::default(),
@@ -513,6 +539,14 @@ impl AppState {
         self.proc_tree = self.proc_flags.proc_tree;
         self.proc_reversed = self.proc_flags.reversed;
         self.per_core = self.proc_flags.per_core;
+        // Detail channel: Enter/signal arms write Config (`detailed_pid`,
+        // `show_detailed`); the assembler reads state, so sync here every
+        // tick. (Flags struct keeps `detailed_pid` runtime-owned, but no
+        // live writer sets state directly — only tests do.)
+        if let Some(v) = cfg.get_i("detailed_pid") {
+            self.detailed_pid = v.max(0) as u64;
+        }
+        self.show_detailed_adj = cfg.get_b("show_detailed").unwrap_or(self.show_detailed_adj);
     }
 }
 
@@ -1320,6 +1354,28 @@ fn collect_prefixes(procs: &mut Vec<ProcInfo>, node: &TreeNode, is_last: bool, h
     }
 }
 
+/// Visible-row pid/depth resolution shared by input dispatch
+/// (`view_from_world`) and post-collapse relocation: skip hidden rows
+/// (`filtered` or the tree sentinel, btop_draw.cpp:2049), skip `start`
+/// rows, take the `selected`-th (1-based; 0 = nothing selected).
+pub fn visible_selected(
+    procs: &[ProcInfo],
+    tree: bool,
+    start: i64,
+    selected: i64,
+) -> Option<(u64, i64)> {
+    if selected <= 0 {
+        return None;
+    }
+    let len = procs.len();
+    procs
+        .iter()
+        .filter(|p| !(p.filtered || (tree && p.tree_index == len)))
+        .skip(start.max(0) as usize)
+        .nth((selected - 1).max(0) as usize)
+        .map(|p| (p.pid, p.depth as i64))
+}
+
 pub fn assemble_proc<'a>(
     state: &'a mut AppState,
     raws: Vec<ProcRaw>,
@@ -1337,18 +1393,17 @@ pub fn assemble_proc<'a>(
     };
     let ncore = state.core_count;
     let factor = state.tick_factor;
+    let tree_mode = state.proc_tree;
     // Selected pid BEFORE the rebuild (visible-row indexing, mirroring
     // the draw row loop) for post-collapse `locate_selection`.
     let selected_pid = if state.proc_selected > 0 {
-        let tree = state.proc_tree;
-        let len = state.proc_view.len();
-        state
-            .proc_view
-            .iter()
-            .filter(|p| !(tree && p.tree_index == len))
-            .skip(state.proc_start.max(0) as usize)
-            .nth((state.proc_selected - 1).max(0) as usize)
-            .map(|p| p.pid)
+        visible_selected(
+            &state.proc_view,
+            tree_mode,
+            state.proc_start,
+            state.proc_selected,
+        )
+        .map(|(pid, _)| pid)
     } else {
         None
     };
@@ -1399,7 +1454,6 @@ pub fn assemble_proc<'a>(
     // pipeline below re-sorts by ppid stably, preserving sibling order.
     let sorting = state.proc_sorting.clone();
     let reverse = state.proc_reversed;
-    let tree_mode = state.proc_tree;
     proc_sorter(&mut ordered, &sorting, reverse, tree_mode);
     // Tree pipeline (osx/btop_collect.cpp:1967-2044). Flat mode keeps the
     // sorter output with positional indices.
@@ -1586,6 +1640,55 @@ pub fn assemble_proc<'a>(
             detail.entry = entry.clone();
             detail.cpu_history = state.detail_cpu.iter().copied().collect();
             detail.mem_history = state.detail_mem.iter().copied().collect();
+            // `_collect_details` (osx:1703-1735): elapsed, parent, status,
+            // memory, first_mem calibration, disk IO.
+            let raw = state.procs.iter().find(|r| r.pid == entry.pid);
+            detail.status = proc_status(raw.map(|r| r.state).unwrap_or(0)).to_string();
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let mut elapsed = sec_to_dhms(
+                now_secs.saturating_sub(raw.map(|r| r.cpu_s).unwrap_or(0) / 1_000_000),
+                false,
+                false,
+            );
+            if elapsed.len() > 8 {
+                elapsed.truncate(elapsed.len() - 3);
+            }
+            detail.elapsed = elapsed;
+            if detail.parent.is_empty() {
+                if let Some(p) = ordered.iter().find(|p| p.pid == entry.ppid) {
+                    detail.parent = p.name.clone();
+                }
+            }
+            let base_10 = state.proc_flags.base_10;
+            let human = |v: u64| {
+                floating_humanizer(
+                    v,
+                    0,
+                    HumanOpts {
+                        shorten: false,
+                        bit: false,
+                        per_second: false,
+                        base_10,
+                    },
+                )
+            };
+            detail.memory = human(entry.mem);
+            let back = detail.mem_history.last().copied().unwrap_or(0);
+            if detail.first_mem == -1
+                || detail.first_mem < back / 2
+                || detail.first_mem > back.saturating_mul(4)
+            {
+                detail.first_mem = (back.saturating_mul(2) as u64).min(state.total_mem) as i64;
+            }
+            // C++ keeps the previous strings when `proc_pid_rusage`
+            // fails (unowned/zombie); same here (`None` = keep).
+            if let Some((r, w)) = state.detail_io {
+                detail.io_read = human(r);
+                detail.io_write = human(w);
+            }
         }
     } else {
         state.detail = None;
@@ -1809,6 +1912,7 @@ mod tests {
             ppid: 0,
             cpu_s: 0,
             cpu_c: 0.0,
+            state: 3,
         }
     }
 
@@ -1825,6 +1929,7 @@ mod tests {
             ppid,
             cpu_s: 0,
             cpu_c: 0.0,
+            state: 3,
         }
     }
 
@@ -2115,6 +2220,45 @@ mod tests {
         assert_eq!(s.detail_mem.len(), 2);
         assert!(s.detail.is_some());
         assert_eq!(s.detail.as_ref().unwrap().entry.pid, 7);
+    }
+
+    #[test]
+    fn proc_detail_fills_elapsed_parent_status_io() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // Started 93784s ago → "1d 02:03:04" → truncated to "1d 02:03"
+        // (osx:1707-1709); ±2s wall wobble can't cross the minute.
+        let cpu_s = (now.saturating_sub(93784)).saturating_mul(1_000_000);
+        let mut s = AppState::default();
+        s.tick_factor = 1.0;
+        s.detailed_pid = 7;
+        s.proc_sorting = "pid".to_string();
+        s.detail_io = Some((3 << 30, 1 << 30));
+        s.total_mem = 64 << 30;
+        let mut parent = proc_raw(1, "launchd", 1000, 100);
+        parent.ppid = 0;
+        let mut child = proc_raw(7, "p", 4000, 4096);
+        child.ppid = 1;
+        child.cpu_s = cpu_s;
+        child.state = 3; // SSLEEP → "Running" via the bitmask quirk.
+        let input = assemble_proc(
+            &mut s,
+            vec![parent, child],
+            8000,
+            50,
+            &TreeOps::default(),
+            0,
+        );
+        let detail = input.detailed.expect("detail built");
+        assert_eq!(detail.elapsed, "1d 02:03");
+        assert_eq!(detail.parent, "launchd");
+        assert_eq!(detail.status, "Running");
+        assert!(!detail.io_read.is_empty() && !detail.io_write.is_empty());
+        assert!(!detail.memory.is_empty());
+        drop(input);
     }
 
     #[test]

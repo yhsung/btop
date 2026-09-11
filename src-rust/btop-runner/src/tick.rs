@@ -401,6 +401,13 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
         // `cpu_p` math; we re-use the assembled state.last_cputimes for
         // parity with the existing wiring tests).
         let delta_total = w.state.last_cputimes;
+        // Detail disk IO for `_collect_details` (osx:1731-1735): fetch
+        // before assemble; `None` keeps the previous strings.
+        w.state.detail_io = if w.state.detailed_pid != 0 {
+            t.backend.proc_io(w.state.detailed_pid)
+        } else {
+            None
+        };
         // Tree collapse channel (C++ `Proc::` members, osx:1968-2006):
         // built from Config, reset after the call (= C++ `= -1`).
         let ops = TreeOps {

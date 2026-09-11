@@ -31,6 +31,13 @@ pub trait MacOsBackend {
     /// Returns (iface_name, ibytes, obytes) per interface.
     fn if_counters(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError>;
     fn proc_list(&mut self) -> Result<Vec<ProcRaw>, CollectError>;
+    /// Per-pid disk IO totals (`proc_pid_rusage(RUSAGE_INFO_CURRENT)`,
+    /// osx/btop_collect.cpp:1731-1735) for the detail pane. Default None
+    /// (ReplayBackend inherits it; the detail test injects values via
+    /// `AppState.detail_io` instead).
+    fn proc_io(&mut self, _pid: u64) -> Option<(u64, u64)> {
+        None
+    }
     /// AppleSi-only. Degrades to Ok(empty) until M2h implements the IOReport/IOHID path (spec S2: optional subsystems never Err).
     fn gpu_residency(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError>;
     /// AppleSi-only. Degrades to Ok(empty) until M2h implements the IOReport/IOHID path (spec S2: optional subsystems never Err).
@@ -63,6 +70,10 @@ pub struct ProcRaw {
     /// (`(cpu_t * machTck) / (timeNow - cpu_s)`, :1892); backs the
     /// "cpu direct" sort key.
     pub cpu_c: f64,
+    /// Process state char (`kp_proc.p_stat`, u8@36): SIDL=1, SRUN=2,
+    /// SSLEEP=3, SSTOP=4, SZOMB=5 (sys/proc.h:148-152); backs the detail
+    /// status line via the `get_status` bitmask chain (:1677-1685).
+    pub state: u8,
 }
 
 /// Deterministic replay source for tests. Queues drain FIFO in call order.

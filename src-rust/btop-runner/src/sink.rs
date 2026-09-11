@@ -294,8 +294,9 @@ impl Sys for FakeSys {
 /// `Proc::sort_vector` (btop_shared.cpp:337-346), transcribed as a static
 /// constant. The list is owned by `Proc::sort_vector` in C++; here it
 /// lives next to the sink because SortPrev/SortNext need it for
-/// wrap-around. Tests cover both directions.
-const SORT_VECTOR: &[&str] = &[
+/// wrap-around. Tests cover both directions. Exported for input dispatch
+/// (`ViewState.sorting_list` mirrors the same table).
+pub const SORT_VECTOR: &[&str] = &[
     "pid",
     "name",
     "command",

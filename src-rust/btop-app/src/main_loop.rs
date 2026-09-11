@@ -432,16 +432,25 @@ pub struct LoopEnv<'a> {
 /// Build the per-keypress [`ViewState`] from [`World`]. Every field mirrors
 /// the Config key / Proc global of the same name (see `ViewState` docs);
 /// box-gate flags come from `shown_boxes`, selection state from the
-/// sink-owned fields (`proc_selected`, `proc_scroll_pos`, …).
-///
-/// DEVIATION (documented gap): box click-maps (`Input::mouse_mappings`)
-/// are not yet published by the draw side, so `handle_key` receives an
-/// empty `input_maps` — mouse clicks decode position only, never box
-/// actions. Menu maps ride from `world.menu.mouse_maps` (real). Keyboard
-/// is fully wired.
+/// sink-owned fields (`proc_selected`, `proc_scroll_pos`, …). Box
+/// click-maps (`Input::mouse_mappings`) ride separately: the tick stores
+/// each draw's maps in `state.mouse_maps` and `dispatch_key` passes them
+/// as `input_maps` (menu maps overlay, same as C++).
 pub fn view_from_world(world: &World) -> ViewState {
     let shown = world.config.get_s("shown_boxes").unwrap_or("").to_string();
     let has = |b: &str| shown.split_whitespace().any(|x| x == b);
+    let tree = world.config.get_b("proc_tree").unwrap_or(false);
+    // Selected row → pid/depth over visible rows (draw :2049 rule);
+    // drives Enter-detail, signal/renice menus and the tree x-zone.
+    let (selected_pid, selected_depth) = btop_runner::wiring::visible_selected(
+        &world.state.proc_view,
+        tree,
+        world.state.proc_start,
+        world.state.proc_selected,
+    )
+    .unwrap_or((0, 0));
+    let detailed_pid = world.state.detailed_pid;
+    let geom = &world.state.proc_geom.base;
     ViewState {
         proc_shown: has("proc"),
         cpu_shown: has("cpu"),
@@ -451,14 +460,36 @@ pub fn view_from_world(world: &World) -> ViewState {
         net_interfaces: world.state.net_interfaces.clone(),
         net_selected: world.state.selected_iface.clone(),
         sorting: world.config.get_s("proc_sorting").unwrap_or("").to_string(),
-        tree: world.config.get_b("proc_tree").unwrap_or(false),
+        sorting_list: btop_runner::sink::SORT_VECTOR
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        tree,
         selected: world.state.proc_selected,
-        filter_text: world.state.proc_filter.clone(),
-        scroll_pos: world.state.proc_scroll_pos,
+        selected_pid,
+        selected_depth,
+        detailed_pid,
+        detailed_dead: detailed_pid != 0
+            && !world.state.proc_view.iter().any(|p| p.pid == detailed_pid),
+        show_detailed: world.config.get_b("show_detailed").unwrap_or(false),
+        followed_pid: world.state.followed_pid.max(0) as u64,
         follow_process: world.config.get_b("follow_process").unwrap_or(false),
-        pause_proc_list: world.config.get_b("pause_proc_list").unwrap_or(false),
+        follow_detailed_cfg: world.config.get_b("proc_follow_detailed").unwrap_or(true),
+        should_return_to_followed: world.state.should_return,
+        restore_detailed_pid: world.state.restore_pid.max(0) as u64,
         proc_last_selected: world.state.last_selected,
-        ..ViewState::default()
+        proc_followed: world.state.proc_followed,
+        filter_text: world.state.proc_filter.clone(),
+        proc_geom: btop_input::actions::ProcGeom {
+            x: geom.x,
+            y: geom.y,
+            width: geom.width,
+            height: geom.height,
+        },
+        show_detailed_geom: world.state.show_detailed_adj,
+        scroll_pos: world.state.proc_scroll_pos,
+        banner_shown: world.config.get_b("proc_banner_shown").unwrap_or(false),
+        pause_proc_list: world.config.get_b("pause_proc_list").unwrap_or(false),
     }
 }
 

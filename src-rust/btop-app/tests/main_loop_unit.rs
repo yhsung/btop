@@ -567,3 +567,83 @@ fn real_env_types_construct() {
     let _reloader = RealReloader::new(false, None);
     let _suspender = RealSuspend;
 }
+
+// ── dispatch: arrow keys move proc selection headlessly ─────────────────────
+
+#[test]
+fn loop_down_arrow_selects_first_row() {
+    let mut w = quiet_world();
+    let (_ops, term) = loop_term();
+    // One Down escape sequence, then input exhaustion.
+    let input = ScriptInput::new(vec![key("\x1b[B"), None]);
+    let mut clock = ScriptClock::new(vec![1000, 1000, 1000], 1000, vec![]);
+    let mut ticker = ScriptTick::new();
+    let mut sys = FakeSys::default();
+    let mut reloader = ScriptReloader::new();
+    let mut sleeper = ScriptSuspend::new();
+    let exit = run_loop(
+        &mut w,
+        &term,
+        &input,
+        &mut clock,
+        &mut ticker,
+        &mut sys,
+        &mut reloader,
+        &mut sleeper,
+        2000,
+        3000,
+        4,
+    );
+    assert_eq!(exit, LoopExit::IterationsExhausted);
+    assert_eq!(w.state.proc_selected, 1, "Down must select row 1");
+}
+
+// ── view_from_world: selected row resolves to pid/depth ─────────────────────
+
+#[test]
+fn view_resolves_selected_pid_from_proc_view() {
+    use btop_draw::proc_::ProcInfo;
+    let mut w = quiet_world();
+    w.state.proc_view = vec![
+        ProcInfo {
+            pid: 10,
+            name: "a".to_string(),
+            cmd: String::new(),
+            short_cmd: String::new(),
+            threads: 1,
+            user: String::new(),
+            mem: 0,
+            cpu_p: 0.0,
+            cpu_c: 0.0,
+            p_nice: 0,
+            ppid: 0,
+            depth: 0,
+            collapsed: false,
+            filtered: false,
+            prefix: String::new(),
+            tree_index: 0,
+        },
+        ProcInfo {
+            pid: 20,
+            name: "b".to_string(),
+            cmd: String::new(),
+            short_cmd: String::new(),
+            threads: 1,
+            user: String::new(),
+            mem: 0,
+            cpu_p: 0.0,
+            cpu_c: 0.0,
+            p_nice: 0,
+            ppid: 0,
+            depth: 0,
+            collapsed: false,
+            filtered: false,
+            prefix: String::new(),
+            tree_index: 1,
+        },
+    ];
+    w.state.proc_selected = 2;
+    let view = btop_app::main_loop::view_from_world(&w);
+    assert_eq!(view.selected_pid, 20);
+    assert_eq!(view.selected, 2);
+}

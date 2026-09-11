@@ -48,6 +48,11 @@ extern "C" {
     // Converts mach-absolute ticks to nanoseconds (nanos = ticks *
     // numer / denom); backs `Shared::machTck` (osx/btop_collect.cpp:681).
     fn mach_timebase_info(info: *mut [u32; 2]) -> i32;
+    // libproc.h: `int proc_pid_rusage(int pid, int flavor, void
+    // **buffer);` with `RUSAGE_INFO_CURRENT` (sys/resource.h:193 = v6).
+    // Called exactly like C++ (osx:1732): stack v6 struct (464B) passed
+    // as the buffer; disk IO totals at +144/+152 on success.
+    fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut *mut std::ffi::c_void) -> i32;
     // mach/mach_init.h:74 `extern mach_port_t mach_host_self(void);`
     fn mach_host_self() -> u32;
     // mach/mach_init.h:80-81: mach_task_self() is a macro for the
@@ -341,6 +346,24 @@ fn read_i32(buf: &[u8], off: usize) -> i32 {
 
 fn read_i64(buf: &[u8], off: usize) -> i64 {
     i64::from_ne_bytes(buf[off..off + 8].try_into().unwrap_or([0; 8]))
+}
+
+/// Disk IO totals for one pid via `proc_pid_rusage(RUSAGE_INFO_CURRENT)`
+/// (osx/btop_collect.cpp:1731-1735): v6 struct is 464B with
+/// `ri_diskio_bytesread` u64@144 / `ri_diskio_byteswritten` u64@152
+/// (C-measured, sys/resource.h). `None` on failure (unowned/zombie —
+/// C++ keeps the previous strings, same as in Linux).
+#[cfg(target_os = "macos")]
+fn proc_disk_io(pid: u64) -> Option<(u64, u64)> {
+    // Call shape mirrors C++ exactly (`(void**)&rusage`, osx:1732): the
+    // address OF the 464B stack buffer, which the implementation fills
+    // in place (passing a pointer-to-pointer would smash the stack).
+    let mut buf = [0u8; 464];
+    let rc = unsafe { proc_pid_rusage(pid as i32, 6, buf.as_mut_ptr().cast()) };
+    if rc != 0 {
+        return None;
+    }
+    Some((read_u64(&buf, 144), read_u64(&buf, 152)))
 }
 
 fn basename_of(path: &[u8]) -> String {
@@ -1362,10 +1385,17 @@ impl MacOsBackend for RealBackend {
     // Identity (name/cmd/user) is fetched ONLY for unseen pids (`no_cache`,
     // cpp:1824) and cached in `proc_meta`; taskinfo failures keep zeroed
     // stats (cpp:1866-1872); p_nice refreshes every tick from kinfo
-    // (cpp:1863). kinfo_proc is 648B: pid i32@40, p_nice i8@242,
+    // (cpp:1863). kinfo_proc is 648B: p_starttime tv_sec i64@0 + tv_usec
+    // i32@8, p_stat u8@36, pid i32@40, p_nice i8@242, e_ppid i32@560,
     // cr_uid u32@420 (C-measured). proc_taskinfo is 96B: rss u64@8,
     // total_user@16, total_system@24, threadnum i32@84 (C-measured,
     // sys/proc_info.h:124-143).
+    //
+    /// Per-pid disk IO via `proc_pid_rusage` (osx:1731-1735).
+    #[cfg(target_os = "macos")]
+    fn proc_io(&mut self, pid: u64) -> Option<(u64, u64)> {
+        proc_disk_io(pid)
+    }
     fn proc_list(&mut self) -> Result<Vec<ProcRaw>, CollectError> {
         let mib: [i32; 4] = [1, 14, 0, 0]; // CTL_KERN,KERN_PROC,KERN_PROC_ALL,0
         let buf = sysctl_fetch(&mib)?;
@@ -1430,6 +1460,8 @@ impl MacOsBackend for RealBackend {
             }
             // p_nice i8@242 refreshes every tick (C++ :1863).
             let nice = chunk[242] as i8 as i64;
+            // Process state char u8@36 (`kp_proc.p_stat`, sys/proc.h).
+            let state = chunk[36];
             // Parent pid i32@560 (`kp_eproc.e_ppid`, C++ :1861); negative
             // (kernel) normalizes to 0, matching the orphan rule the tree
             // builder applies (shared.cpp: orphan ppid=0).
@@ -1478,6 +1510,7 @@ impl MacOsBackend for RealBackend {
                 ppid,
                 cpu_s,
                 cpu_c,
+                state,
             });
         }
         // Prune dead pids (C++ :1904-1905 remove_if, non-paused path).
