@@ -35,6 +35,7 @@
 //!   `signalChoose` is NOT replayed here (the btop-menu module owns it).
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use btop_config::config::{Config, ONE_DAY_MILLIS};
 use btop_draw::boxes::Layout;
@@ -126,6 +127,17 @@ pub struct World {
     /// Version string (`Global::Version`, btop.cpp:97 — `"1.4.7"`).
     /// Surfaced by `--version` (T2 wiring) and the help footer.
     pub version: &'static str,
+    /// Config/theme path set (`Config::conf_dir`/`conf_file`,
+    /// src/btop_config.cpp:467-468; `Theme::user_theme_dir`/`theme_dir`/
+    /// `custom_theme_dir`, src/btop.cpp:862-925). Empty = unsettled,
+    /// mirroring C++ `fs::path::empty()` / `clear()`. P4 T5
+    /// (`btop_app::boot::init_config_dirs`) writes these; T7 `fn main`
+    /// consumes them.
+    pub conf_dir: PathBuf,
+    pub conf_file: PathBuf,
+    pub user_theme_dir: PathBuf,
+    pub theme_dir: PathBuf,
+    pub custom_theme_dir: PathBuf,
 }
 
 impl Default for World {
@@ -336,6 +348,11 @@ impl Default for World {
             banner: String::new(),
             banner_src: Vec::new(),
             version: "1.4.7",
+            conf_dir: PathBuf::new(),
+            conf_file: PathBuf::new(),
+            user_theme_dir: PathBuf::new(),
+            theme_dir: PathBuf::new(),
+            custom_theme_dir: PathBuf::new(),
         }
     }
 }

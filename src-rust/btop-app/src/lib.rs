@@ -13,11 +13,11 @@ pub mod locale;
 /// Signal handlers + atomic flag plumbing (T4).
 pub mod signals;
 
-/// Init chain: parse_cli → setuid_drop → init_config_dirs → init_locale
-/// → Term::init → configure_tty_mode → Shared::init → set_boxes fallback
-/// → Theme → install_signals → presetsValid+apply_preset → min_size_loop
-/// → calcSizes → print_box_outlines (T2). Placeholder.
-pub mod boot {}
+/// Init chain: config dirs → Config::load → Shared::init → apply_preset
+/// (T5). C++ truth: src/btop.cpp:862-925 (dirs), :325-353 (init_config),
+/// osx/btop_collect.cpp Shared::init, btop.cpp:1093 + btop_config.cpp:515-550
+/// (presetsValid + apply_preset).
+pub mod boot;
 
 /// Cached box-label strings (T5). Placeholder.
 pub mod box_labels {}

@@ -212,6 +212,10 @@ pub struct AppState {
     /// machTck/clkTck factor (cpp:679-691). P4/live calibration out of
     /// scope — tests inject a fixed factor; tick passes the backend value.
     pub tick_factor: f64,
+    /// System page size (`Shared::pageSize`, osx/btop_collect.cpp
+    /// `Shared::init`). Probed at boot with the 4096 fallback; the mem
+    /// assembler takes its page stride per call, this pins the boot value.
+    pub page_size: i64,
     pub proc_sorting: String,
     pub proc_reversed: bool,
     pub proc_tree: bool,
@@ -324,6 +328,7 @@ impl Default for AppState {
             proc_last_ticks: HashMap::new(),
             last_cputimes: 0,
             tick_factor: 1.0,
+            page_size: 4096,
             proc_sorting: "cpu lazy".to_string(), // btop_config.cpp:284
             proc_reversed: false,
             proc_tree: false,
