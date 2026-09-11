@@ -62,6 +62,11 @@ extern "C" {
     fn proc_pidpath(pid: i32, buffer: *mut u8, buffersize: u32) -> i32;
     // sys/statvfs.h:60 `int statvfs(const char *, struct statvfs *);`
     fn statvfs(path: *const u8, buf: *mut u8) -> i32;
+    // sys/mount.h:397 `int getmntinfo(struct statfs **mntbufp, int flags);`
+    // MNT_NOWAIT=2 (sys/mount.h:522). Opaque out-pointer: entries are read
+    // as raw bytes — stride 2168B, f_fstypename[16]@72, f_mntonname[1024]@88
+    // (C-measured via clang sizeof/offsetof probe against sys/mount.h).
+    fn getmntinfo(mntbufp: *mut *mut u8, flags: i32) -> i32;
 }
 
 // ---- M2h(a): IOHID thermal via CoreFoundation/IOKit (mirrors sensors.cpp) ----
@@ -1080,6 +1085,46 @@ impl MacOsBackend for RealBackend {
         ))
     }
 
+    // C++ osx/btop_collect.cpp:1300-1330: getmntinfo(MNT_NOWAIT) table walk;
+    // skip autofs; name = mountpoint filename, root → "root". The
+    // disks_filter include/exclude pass lives in apply_disks_filter
+    // (backend.rs); unmounted entries are pruned tick-side.
+    fn disk_mounts(&mut self) -> Result<Vec<(String, String)>, CollectError> {
+        fn field(bytes: &[u8]) -> String {
+            String::from_utf8_lossy(bytes)
+                .trim_end_matches('\0')
+                .to_string()
+        }
+        let mut out = Vec::new();
+        #[cfg(target_os = "macos")]
+        {
+            // SAFETY: getmntinfo fills a kernel-owned static buffer (must
+            // NOT be freed); the `count` entries stay valid until the next
+            // getmntinfo call. All calls happen on the single tick thread.
+            // Entry stride 2168B C-measured (see extern decl above).
+            const STRIDE: usize = 2168;
+            let mut buf: *mut u8 = std::ptr::null_mut();
+            let n = unsafe { getmntinfo(&mut buf, 2) }; // MNT_NOWAIT
+            if n < 0 {
+                return Err(CollectError::Syscall("getmntinfo", -1));
+            }
+            for i in 0..n as usize {
+                // SAFETY: `i` is in 0..n of the buffer getmntinfo just filled.
+                let base = unsafe { std::slice::from_raw_parts(buf.add(i * STRIDE), STRIDE) };
+                if field(&base[72..88]) == "autofs" {
+                    continue;
+                }
+                let mount = field(&base[88..88 + 1024]);
+                let name = if mount == "/" {
+                    "root".to_string()
+                } else {
+                    basename_of(mount.as_bytes())
+                };
+                out.push((mount, name));
+            }
+        }
+        Ok(out)
+    }
     // C++ cpp:1526-1542: sysctl({CTL_NET, PF_ROUTE, 0,0,NET_RT_IFLIST2, 0})
     // two-phase, parse RTM_IFINFO2 records. Degrade to empty on probe
     // failure (interfaces fluctuate; C++ logs + returns empty net).
@@ -1092,8 +1137,10 @@ impl MacOsBackend for RealBackend {
     }
 
     // C++ cpp:1789-1800: two-phase sysctl({CTL_KERN,KERN_PROC,KERN_PROC_ALL,0})
-    // sizing + fetch, then per-pid proc_pidinfo (cpp:1875). Per-process
-    // failures are skipped (continue), never abort the whole list.
+    // sizing + fetch, then per-pid proc_pidinfo (cpp:1875). Entries are
+    // KEPT on per-process failure (zombies/SIP-denied → zeroed stats, C++
+    // proc loop semantics); only dead pids (absent next round) drop out
+    // tick-side.
     // kinfo_proc is 648B opaque here; pid i32@40 (C-measured).
     // proc_taskinfo is 96B: rss u64@8, total_user@16, total_system@24,
     // threadnum i32@84 (C-measured, sys/proc_info.h:124-143).

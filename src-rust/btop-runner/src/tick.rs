@@ -24,6 +24,7 @@
 //! so P4 can swap `RealBackend` at runtime. Verified against the trait
 //! declaration (`src-rust/btop-collect/src/backend.rs`).
 
+use btop_collect::backend::apply_disks_filter;
 use btop_collect::backend::MacOsBackend;
 use btop_config::theme::default_theme;
 use btop_draw::ansi::FX_UB;
@@ -310,6 +311,26 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
         // doesn't expose it on the backend, so we fall back to the
         // assembled state value (0 means "unknown").
         let total_mem = w.state.total_mem;
+        // Disk discovery (C++ osx/btop_collect.cpp:1284-1345): enumerate
+        // mounts every tick, apply disks_filter, prune unmounted state.
+        // The order refresh is skipped when discovery is empty (headless
+        // ReplayBackend default) so unit goldens seeding mem_disks_order
+        // directly keep working; live getmntinfo never returns empty.
+        let filter = w.config.get_s("disks_filter").unwrap_or("").to_string();
+        let discovered = apply_disks_filter(&t.backend.disk_mounts().unwrap_or_default(), &filter);
+        if !discovered.is_empty() {
+            w.state.mem_disks_order = discovered.iter().map(|(m, _)| m.clone()).collect();
+            w.state
+                .mem_disks
+                .retain(|m, _| discovered.iter().any(|(dm, _)| dm == m));
+            w.state
+                .disk_last_io
+                .retain(|m, _| discovered.iter().any(|(dm, _)| dm == m));
+        }
+        let names: std::collections::HashMap<&str, &str> = discovered
+            .iter()
+            .map(|(m, n)| (m.as_str(), n.as_str()))
+            .collect();
         let disks: Vec<DiskSample> = w
             .state
             .mem_disks_order
@@ -329,7 +350,11 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
                     .unwrap_or((0, 0));
                 DiskSample {
                     mount: mount.clone(),
-                    name: mount.clone(),
+                    name: names
+                        .get(mount.as_str())
+                        .map(|s| s.to_string())
+                        .or_else(|| w.state.mem_disks.get(mount).map(|d| d.name.clone()))
+                        .unwrap_or_else(|| mount.clone()),
                     blocks,
                     bfree,
                     frsize,

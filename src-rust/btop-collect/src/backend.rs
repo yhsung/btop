@@ -19,6 +19,9 @@ pub trait MacOsBackend {
     fn swap_raw(&mut self) -> Result<(u64, u64, u64), CollectError>;
     /// Returns (blocks, bfree, frsize). `mount` is ignored by ReplayBackend (FIFO regardless).
     fn disk_raw(&mut self, mount: &str) -> Result<(u64, u64, u64), CollectError>;
+    /// Returns (mountpoint, display name) per mounted fs (C++ `found` list,
+    /// osx/btop_collect.cpp:1300-1330). ReplayBackend drains a queue.
+    fn disk_mounts(&mut self) -> Result<Vec<(String, String)>, CollectError>;
     /// Returns (iface_name, ibytes, obytes) per interface.
     fn if_counters(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError>;
     fn proc_list(&mut self) -> Result<Vec<ProcRaw>, CollectError>;
@@ -44,6 +47,7 @@ pub struct ProcRaw {
 /// `load_avg` → `Ok([0,0,0])`, `package_temp` → `Ok(None)`, `core_temps` → `Ok(vec![])`,
 /// `vm_raw` → `Err(Unsupported)`, `swap_raw` → `Ok((0,0,0))`, `disk_raw` → `Ok((0,0,0))`,
 /// `if_counters` → `Ok(vec![])`, `proc_list` → `Ok(vec![])`,
+/// `disk_mounts` → `Ok(vec![])`,
 /// `gpu_residency` → `Ok(vec![])`, `gpu_energy` → `Ok((0, Nano))`, `hid_temps` → `Ok(vec![])`.
 /// Tasks 4–6 append their methods here with the same documented fallback.
 #[derive(Debug, Default)]
@@ -55,6 +59,7 @@ pub struct ReplayBackend {
     pub vm_raw_q: VecDeque<(u64, u64, u64, u64, u64)>,
     pub swap_raw_q: VecDeque<(u64, u64, u64)>,
     pub disk_raw_q: VecDeque<(u64, u64, u64)>,
+    pub disk_mounts_q: VecDeque<Vec<(String, String)>>,
     pub if_counters_q: VecDeque<Vec<(String, u64, u64)>>,
     pub proc_list_q: VecDeque<Vec<ProcRaw>>,
     pub gpu_residency_q: VecDeque<Vec<(String, u64, u64)>>,
@@ -88,6 +93,9 @@ impl MacOsBackend for ReplayBackend {
     fn disk_raw(&mut self, _mount: &str) -> Result<(u64, u64, u64), CollectError> {
         Ok(self.disk_raw_q.pop_front().unwrap_or((0, 0, 0)))
     }
+    fn disk_mounts(&mut self) -> Result<Vec<(String, String)>, CollectError> {
+        Ok(self.disk_mounts_q.pop_front().unwrap_or_default())
+    }
     fn if_counters(&mut self) -> Result<Vec<(String, u64, u64)>, CollectError> {
         Ok(self.if_counters_q.pop_front().unwrap_or_default())
     }
@@ -106,6 +114,34 @@ impl MacOsBackend for ReplayBackend {
     fn hid_temps(&mut self) -> Result<Vec<f64>, CollectError> {
         Ok(self.hid_temps_q.pop_front().unwrap_or_default())
     }
+}
+
+/// Apply `disks_filter` to discovered mounts (C++ osx/btop_collect.cpp:1291-1298):
+/// empty filter keeps all; `exclude=` prefix inverts; otherwise only listed
+/// mountpoints are kept. Pure — unit-tested here; the `autofs` skip lives in
+/// the real `disk_mounts` impl (getmntinfo layer).
+pub fn apply_disks_filter(mounts: &[(String, String)], filter: &str) -> Vec<(String, String)> {
+    let filter = filter.trim();
+    if filter.is_empty() {
+        return mounts.to_vec();
+    }
+    let (exclude, list) = match filter.strip_prefix("exclude=") {
+        Some(rest) => (true, rest),
+        None => (false, filter),
+    };
+    let wanted: Vec<&str> = list.split_whitespace().collect();
+    mounts
+        .iter()
+        .filter(|(mp, _)| {
+            let hit = wanted.contains(&mp.as_str());
+            if exclude {
+                !hit
+            } else {
+                hit
+            }
+        })
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -128,5 +164,33 @@ mod tests {
         assert_eq!(b.load_avg().unwrap(), [1.0, 2.0, 3.0]);
         assert_eq!(b.load_avg().unwrap(), [4.0, 5.0, 6.0]);
         assert_eq!(b.load_avg().unwrap(), [0.0, 0.0, 0.0]);
+    }
+
+    fn sample_mounts() -> Vec<(String, String)> {
+        vec![
+            ("/".to_string(), "root".to_string()),
+            ("/System/Volumes/VM".to_string(), "VM".to_string()),
+            ("/System/Volumes/Data".to_string(), "Data".to_string()),
+        ]
+    }
+
+    #[test]
+    fn disks_filter_empty_keeps_all() {
+        assert_eq!(apply_disks_filter(&sample_mounts(), ""), sample_mounts());
+        assert_eq!(apply_disks_filter(&sample_mounts(), "   "), sample_mounts());
+    }
+
+    #[test]
+    fn disks_filter_include_lists_only_matches() {
+        let out = apply_disks_filter(&sample_mounts(), "/ /System/Volumes/VM");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].1, "root");
+    }
+
+    #[test]
+    fn disks_filter_exclude_drops_matches() {
+        let out = apply_disks_filter(&sample_mounts(), "exclude=/ /System/Volumes/Data");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1, "VM");
     }
 }

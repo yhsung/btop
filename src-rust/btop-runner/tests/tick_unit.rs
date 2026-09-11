@@ -539,6 +539,12 @@ fn backend_methods_called_per_box() {
             self.calls.push(format!("disk_raw({})", mount));
             self.b.disk_raw(mount)
         }
+        fn disk_mounts(
+            &mut self,
+        ) -> Result<Vec<(String, String)>, btop_collect::types::CollectError> {
+            self.calls.push("disk_mounts".into());
+            self.b.disk_mounts()
+        }
         fn if_counters(
             &mut self,
         ) -> Result<Vec<(String, u64, u64)>, btop_collect::types::CollectError> {
