@@ -53,20 +53,35 @@ pub trait FsOps {
 /// Live [`FsOps`] (`std::fs` + `std::env`).
 pub struct RealFs;
 
+/// Pure XDG→HOME selection behind [`RealFs::config_base`]: when
+/// `XDG_CONFIG_HOME` is set-but-missing, fall back to the HOME-based path
+/// instead of skipping the conf-dir block. `exists` is a parameter so tests
+/// inject it without touching the real fs or process env.
+pub fn select_config_base(
+    xdg: Option<PathBuf>,
+    home: Option<PathBuf>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    if let Some(xdg) = xdg {
+        if exists(&xdg) {
+            return Some(xdg.join("btop"));
+        }
+    }
+    if let Some(home) = home {
+        if exists(&home) {
+            return Some(home.join(".config").join("btop"));
+        }
+    }
+    None
+}
+
 impl FsOps for RealFs {
     fn config_base(&self) -> Option<PathBuf> {
-        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-            let xdg = PathBuf::from(xdg);
-            if xdg.exists() {
-                return Some(xdg.join("btop"));
-            }
-        } else if let Some(home) = std::env::var_os("HOME") {
-            let home = PathBuf::from(home);
-            if home.exists() {
-                return Some(home.join(".config").join("btop"));
-            }
-        }
-        None
+        select_config_base(
+            std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+            std::env::var_os("HOME").map(PathBuf::from),
+            Path::exists,
+        )
     }
 
     fn create_dir_all(&self, path: &Path) -> Result<(), String> {

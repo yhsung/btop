@@ -126,15 +126,26 @@ fn publish_flags(flags: Arc<SignalFlags>, term: Option<Arc<TermWrapper>>) {
     let term_ptr = term
         .as_ref()
         .map_or_else(std::ptr::null_mut, |t| Arc::as_ptr(t) as *mut TermWrapper);
-    // Store owners first so the pointers are valid before they become
-    // visible to handlers. `expect` is fine: install never runs in
-    // signal context, and a poisoned boot mutex is unrecoverable.
-    *OWNING_FLAGS
-        .lock()
-        .expect("signal flags owner slot poisoned") = Some(flags);
-    *OWNING_TERM.lock().expect("crash term owner slot poisoned") = term;
+    // Retain the previous owners in locals: replacing the slots first drops
+    // the last `Arc` of a prior install, which could free the pointees
+    // while a handler is mid-flight through the old raw pointers. The old
+    // refs are dropped only after both new pointers are stored below.
+    // `expect` is fine: install never runs in signal context, and a
+    // poisoned boot mutex is unrecoverable.
+    let old_flags = std::mem::replace(
+        &mut *OWNING_FLAGS
+            .lock()
+            .expect("signal flags owner slot poisoned"),
+        Some(flags),
+    );
+    let old_term = std::mem::replace(
+        &mut *OWNING_TERM.lock().expect("crash term owner slot poisoned"),
+        term,
+    );
     HANDLER_FLAGS.store(flags_ptr, Ordering::SeqCst);
     CRASH_TERM_PTR.store(term_ptr, Ordering::SeqCst);
+    drop(old_flags);
+    drop(old_term);
 }
 
 /// Flags for the current trampoline, if published.
@@ -261,8 +272,10 @@ impl SignalInstaller for RealInstaller {
         for sig in CRASH_SIGNALS {
             install_sigaction(sig, crash_trampoline)?;
         }
-        // btop.cpp:1062-1065: block SIGUSR1 so it only wakes `pselect`
-        // (T7 applies the same mask at the poll site).
+        // btop.cpp:1062-1065: block SIGUSR1 process-wide. T7 uses plain
+        // `poll` (no masked `pselect`): nothing in-port sends SIGUSR1, so
+        // an external one pends; internal wakes ride `interrupt_input` /
+        // EINTR / the poll timeout.
         let mask = sigusr1_block_mask();
         nix::sys::signal::sigprocmask(SigmaskHow::SIG_BLOCK, Some(&mask), None)
             .map_err(|e| format!("sigprocmask(SIGUSR1 block) failed: {e}"))?;
@@ -315,8 +328,9 @@ pub fn install_signals(
 }
 
 /// The SIGUSR1 mask from the C++ install block (btop.cpp:1062-1065).
-/// [`RealInstaller`] applies it process-wide; T7's `pselect` uses the
-/// same set as its wait mask.
+/// [`RealInstaller`] applies it process-wide; T7 polls with plain `poll`
+/// (no masked `pselect`), so an external SIGUSR1 pends until exit —
+/// nothing in-port sends it.
 pub fn sigusr1_block_mask() -> SigSet {
     let mut mask = SigSet::empty();
     mask.add(Signal::SIGUSR1);

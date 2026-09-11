@@ -177,8 +177,9 @@ pub trait InputPoll: Send + Sync {
 ///
 /// DEVIATIONS: C++ waits with `pselect` under the SIGUSR1 mask and drains
 /// stdin in a loop (its fd is non-blocking after `Input::init`); here
-/// `nix::poll::poll` runs without the mask (T7 owns signal masking at its
-/// poll site) and a single `read` serves (one keypress per small-screen
+/// plain `nix::poll::poll` runs with no masked `pselect` (an external
+/// SIGUSR1 pends — nothing in-port sends it; internal wakes ride
+/// `interrupt_input` / EINTR / the poll timeout) and a single `read` serves (one keypress per small-screen
 /// iteration is enough — the loop re-polls). Key decoding (`Input::get`'s
 /// escape tables) is skipped: raw bytes compare equal for the `q`/digit
 /// arms this loop inspects.

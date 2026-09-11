@@ -11,7 +11,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use btop_app::boot::{
-    apply_preset_default, init_config_dirs, shared_init, trim_name, FsOps, SysProbe,
+    apply_preset_default, init_config_dirs, select_config_base, shared_init, trim_name, FsOps,
+    SysProbe,
 };
 use btop_config::cli::Cli;
 use btop_runner::sink::World;
@@ -292,6 +293,20 @@ fn missing_conf_file_returns_warnings_but_ok() {
     let fs = MockFs::new().with_base("/cfg");
     let warnings = init_config_dirs(&mut w, &Cli::default(), &fs).unwrap();
     assert!(!warnings.is_empty());
+}
+
+#[test]
+fn xdg_set_but_missing_falls_back_to_home() {
+    // `XDG_CONFIG_HOME` set-but-missing must not shadow an existing HOME
+    // base (previously the whole conf-dir block was skipped). Injected
+    // `exists` keeps the test hermetic: no real fs or process env reads.
+    let exists = |p: &Path| p == Path::new("/home/u");
+    let got = select_config_base(
+        Some(PathBuf::from("/missing/xdg")),
+        Some(PathBuf::from("/home/u")),
+        exists,
+    );
+    assert_eq!(got, Some(PathBuf::from("/home/u/.config/btop")));
 }
 
 // ── shared_init ─────────────────────────────────────────────────────────────

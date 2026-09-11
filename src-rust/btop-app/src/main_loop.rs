@@ -655,9 +655,9 @@ pub fn main_loop(
                 future_time = env.clock.now_ms() + update_ms;
             } else if future_time - current > update_ms {
                 future_time = current;
-            // :1169 — wait on input OR signal (the pselect site; the
-            // SIGUSR1/SIGWINCH mask design is documented on `RealInputPoll`
-            // and below). `false` covers both timeout and an EINTR-broken
+            // :1169 — wait on input OR signal (plain `poll`, no masked
+            // `pselect`; the SIGUSR1 process-wide block is documented on
+            // `RealInstaller`). `false` covers both timeout and an EINTR-broken
             // wait; with `SA_RESTART` (see the install site) the kernel may
             // instead restart the wait, so a pending flag is serviced at
             // most one quantum late (≤1000ms here) — the outer flag checks

@@ -6,6 +6,8 @@
 //! real termios fds. Production code uses [`RealOps`], a thin delegate
 //! over [`btop_tools::term::Term`]. T7's `clean_quit`/main loop consume
 //! this wrapper.
+//!
+//! NOTE: the `linebuffered()` port omits C++ `setlinebuf`/`setbuf(stdin)`, consistent with the `sync_with_stdio` non-port.
 
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::Arc;
