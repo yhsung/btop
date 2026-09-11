@@ -38,6 +38,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use btop_config::config::{Config, ONE_DAY_MILLIS};
+use btop_config::theme::default_theme;
 use btop_draw::boxes::Layout;
 use btop_input::actions::{Action, MenuKind, RunTarget, ScrollKey};
 #[cfg_attr(not(test), allow(unused_imports))]
@@ -810,6 +811,17 @@ pub fn execute_single(
             let acts = w
                 .menu
                 .show(m, sig, &ctx, &mut w.store, &mut w.config, &w.lists);
+            // show/process only drive LOGIC — the overlay bytes must be
+            // rebuilt explicitly (menus.rs scope split). Theme falls back
+            // to Default when no theme file has been loaded yet (live boot
+            // before Theme port, unit Worlds).
+            let theme = if w.theme.is_empty() {
+                default_theme()
+            } else {
+                w.theme.clone()
+            };
+            w.menu
+                .render_overlay(&w.store, &w.lists, &theme, term_w as i64, term_h as i64);
             for a in acts {
                 if let Action::Run {
                     target,
@@ -2120,6 +2132,14 @@ mod tests {
             // Every kind activates a current menu (SizeError may resolve
             // via coerce_size, but with 100x30 it stays as requested).
             assert!(w.menu.current.is_some(), "kind {kind:?} did not activate");
+            // Rendered overlay bytes must exist for the visible menus —
+            // without render_overlay the live screen never shows them.
+            if matches!(kind, MenuKind::Main | MenuKind::Help | MenuKind::Options) {
+                assert!(
+                    !w.menu.overlay.is_empty(),
+                    "kind {kind:?} rendered no overlay"
+                );
+            }
         }
     }
 

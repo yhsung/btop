@@ -513,6 +513,21 @@ fn dispatch_menu(
     let actions = world
         .menu
         .process(key, &ctx, &mut world.store, &mut world.config, &world.lists);
+    // Same logic/render split as the ShowMenu arm in sink.rs: rebuild the
+    // overlay bytes after every menu keypress (theme falls back to Default
+    // until the Theme-file port lands).
+    let theme = if world.theme.is_empty() {
+        btop_config::theme::default_theme()
+    } else {
+        world.theme.clone()
+    };
+    world.menu.render_overlay(
+        &world.store,
+        &world.lists,
+        &theme,
+        term_w as i64,
+        term_h as i64,
+    );
     execute_all(world, sys, term_w, term_h, &actions)
 }
 
