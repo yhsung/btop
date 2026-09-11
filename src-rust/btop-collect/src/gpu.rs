@@ -125,9 +125,12 @@ mod tests {
     #[test]
     fn vram_used_sums_named_counters() {
         // used=(act+inact+wire+spec+compr-purge-ext)*page; mirrors cpp:569-579.
+        // Named bindings keep the formula terms visible (a literal `- 0`
+        // would trip clippy::identity_op).
+        let (act, inact, wire, spec, compr, purge, ext) = (10, 5, 3, 1, 1, 2, 0);
         assert_eq!(
-            vram_used(10, 5, 3, 1, 1, 2, 0, 4096),
-            (10 + 5 + 3 + 1 + 1 - 2 - 0) * 4096
+            vram_used(act, inact, wire, spec, compr, purge, ext, 4096),
+            (act + inact + wire + spec + compr - purge - ext) * 4096
         );
     }
 

@@ -1162,7 +1162,7 @@ mod tests {
         assert_eq!(len, 5);
         assert_eq!(
             out,
-            format!("\x1b[1;49f\x1b[22mCB┐TI\x1b[1m12:00CB\x1b[22m┌")
+            "\x1b[1;49f\x1b[22mCB┐TI\x1b[1m12:00CB\x1b[22m┌".to_string()
         );
         // Changed length without resize: erase old run first.
         let (out2, len2) = render_clock(&c, 8, 1, 1, 100, false, false, 0, "CB", "TI");
