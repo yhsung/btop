@@ -22,6 +22,7 @@ use crate::boxes::{celsius_to, create_box, CommonFlags, CpuGeom, Palette};
 use crate::meter_graph::{meter, Graph, GraphOpts};
 use crate::symbols::graph_table;
 use crate::theme_grad::gradient;
+use btop_tools::mouse::MouseMap;
 use btop_tools::strtools::{ljust, rjust, sec_to_dhms, trans, uresize};
 use std::collections::{HashMap, VecDeque};
 
@@ -187,6 +188,7 @@ fn render_frame_buttons(
     pal: &Palette,
     title_left: &str,
     title_right: &str,
+    maps: &mut Vec<MouseMap>,
 ) -> String {
     if !input.force_redraw {
         return String::new();
@@ -300,6 +302,36 @@ fn render_frame_buttons(
     out += " +";
     out += FX_UB;
     out += title_right;
+    // Title-button zones (:627-638) ride with the pixels (redraw-gated,
+    // like C++); the tick caches them across incremental ticks.
+    maps.push(MouseMap {
+        x: x + 11,
+        y: button_y,
+        w: 4,
+        h: 1,
+        action: "m".to_string(),
+    });
+    maps.push(MouseMap {
+        x: x + 17,
+        y: button_y,
+        w: 8,
+        h: 1,
+        action: "p".to_string(),
+    });
+    maps.push(MouseMap {
+        x: x + width - update.len() as i64 - 7,
+        y: button_y,
+        w: 2,
+        h: 1,
+        action: "-".to_string(),
+    });
+    maps.push(MouseMap {
+        x: x + width - 5,
+        y: button_y,
+        w: 2,
+        h: 1,
+        action: "+".to_string(),
+    });
 
     // Container engine name (:641-643). Harness None → skipped; the body
     // is fully wired (not a no-op) and covered by a smoke test.
@@ -757,7 +789,12 @@ fn render_load_avg(load_avg: [f64; 3], geom: &CpuGeom, main_fg: &str, cy: i64, c
 
 /// Draw the CPU box. `geom` is the cpu part of `Layout` (calcSizes);
 /// `theme` is the Default-keyed map (`default_theme()`).
-pub fn draw_cpu(input: &CpuDrawInput, geom: &CpuGeom, theme: &HashMap<String, String>) -> String {
+pub fn draw_cpu(
+    input: &CpuDrawInput,
+    geom: &CpuGeom,
+    theme: &HashMap<String, String>,
+    maps: &mut Vec<MouseMap>,
+) -> String {
     // data_same → cached out (Graph::operator(data_same=true) returns `out`).
     if input.data_same {
         return input.prev.unwrap_or("").to_string();
@@ -858,7 +895,7 @@ pub fn draw_cpu(input: &CpuDrawInput, geom: &CpuGeom, theme: &HashMap<String, St
     };
 
     let mut out = String::new();
-    out += &render_frame_buttons(input, geom, &pal, &title_left, &title_right);
+    out += &render_frame_buttons(input, geom, &pal, &title_left, &title_right, maps);
 
     // Battery title readout (:766-806). Harness show_battery=false.
     // Stateless: always renders the current run when values are present
@@ -1063,6 +1100,6 @@ mod tests {
         };
         let theme = crate::theme_grad::default_theme();
         let geom = crate::boxes::calc_sizes(&crate::boxes::LayoutInput::defaults(100, 30)).cpu;
-        assert_eq!(draw_cpu(&input, &geom, &theme), "");
+        assert_eq!(draw_cpu(&input, &geom, &theme, &mut Vec::new()), "");
     }
 }

@@ -33,6 +33,7 @@ use crate::boxes::{create_box, human_bytes, ljust_b, rjust_b, CommonFlags, MemGe
 use crate::meter_graph::{meter, Graph, GraphOpts};
 use crate::symbols::graph_table;
 use crate::theme_grad::gradient;
+use btop_tools::mouse::MouseMap;
 use btop_tools::strtools::{ssplit, trans, uresize};
 use std::collections::HashMap;
 
@@ -135,7 +136,12 @@ fn capitalize(s: &str) -> String {
 /// Outer box + disks title + divider column (calcSizes :2487-2495) plus the
 /// io title (draw :1338-1339). Returns empty when `!force_redraw`.
 /// (`Input::mouse_mappings` writes are caller concerns, not bytes.)
-fn render_frame(input: &MemDrawInput, geom: &MemGeom, pal: &Palette) -> String {
+fn render_frame(
+    input: &MemDrawInput,
+    geom: &MemGeom,
+    pal: &Palette,
+    maps: &mut Vec<MouseMap>,
+) -> String {
     if !input.force_redraw {
         return String::new();
     }
@@ -180,6 +186,19 @@ fn render_frame(input: &MemDrawInput, geom: &MemGeom, pal: &Palette) -> String {
     out += FX_UB;
     out += &pal.box_color;
     out += crate::symbols::box_chars::TITLE_RIGHT;
+    // Disks title zone (:2488-2489) rides with the pixels (redraw-gated,
+    // like C++); the tick caches it across incremental ticks.
+    maps.push(MouseMap {
+        x: if f.show_disks {
+            geom.divider + 3
+        } else {
+            x + width - 8
+        },
+        y,
+        w: 5,
+        h: 1,
+        action: "d".to_string(),
+    });
     // Divider column (:2491-2494).
     if f.show_disks {
         out += &mv_to(y, geom.divider);
@@ -207,6 +226,16 @@ fn render_frame(input: &MemDrawInput, geom: &MemGeom, pal: &Palette) -> String {
         out += FX_UB;
         out += &pal.box_color;
         out += crate::symbols::box_chars::TITLE_RIGHT;
+        // Io title zone (:1338-1339), gated on show_io_stat/io_mode.
+        if f.show_io_stat || f.io_mode {
+            maps.push(MouseMap {
+                x: x + width - 5,
+                y,
+                w: 2,
+                h: 1,
+                action: "i".to_string(),
+            });
+        }
     }
     out
 }
@@ -874,7 +903,12 @@ fn render_disks_normal(
 
 /// Draw the mem box. `geom` is the mem part of `Layout` (calcSizes);
 /// `theme` is the Default-keyed map (`default_theme()`).
-pub fn draw_mem(input: &MemDrawInput, geom: &MemGeom, theme: &HashMap<String, String>) -> String {
+pub fn draw_mem(
+    input: &MemDrawInput,
+    geom: &MemGeom,
+    theme: &HashMap<String, String>,
+    maps: &mut Vec<MouseMap>,
+) -> String {
     // data_same → cached out (Graph::operator(data_same=true) returns `out`).
     if input.data_same {
         return input.prev.unwrap_or("").to_string();
@@ -897,7 +931,7 @@ pub fn draw_mem(input: &MemDrawInput, geom: &MemGeom, theme: &HashMap<String, St
     let graph_bg = graph_table(&table_key).map(|t| t[6]).unwrap_or(" ");
 
     let mut out = String::new();
-    out += &render_frame(input, geom, &pal);
+    out += &render_frame(input, geom, &pal, maps);
     out += &render_mem_swap(input, geom, &pal, theme, base_symbol);
 
     // Disks (:1394-1480).

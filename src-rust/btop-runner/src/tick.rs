@@ -266,6 +266,9 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
     let theme = default_theme();
     let mut output = String::new();
     let mut ran_boxes: Vec<String> = Vec::new();
+    // Box click-maps accumulate across draws (C++ `Input::mouse_mappings`
+    // fills during draw) and ride to input dispatch via `state.mouse_maps`.
+    let mut box_maps = Vec::new();
     // Uptime source for the cpu `up` row (C++ calls Tools::system_uptime()
     // inside draw; the stateless port threads it through state).
     w.state.uptime_secs = t.backend.system_uptime();
@@ -281,7 +284,7 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
         let pkg = t.backend.package_temp().unwrap_or(None);
         let core_t = t.backend.core_temps().unwrap_or_default();
         let cpu_input = assemble_cpu(&mut w.state, &ticks, load, term_w, pkg, &core_t);
-        let s = draw_cpu(&cpu_input, &w.layout.cpu, &theme);
+        let s = draw_cpu(&cpu_input, &w.layout.cpu, &theme, &mut box_maps);
         output.push_str(&s);
         ran_boxes.push("cpu".to_string());
     }
@@ -372,7 +375,7 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
             })
             .collect();
         let mem_input = assemble_mem(&mut w.state, vm, swap, total_mem, &disks, term_w);
-        let s = draw_mem(&mem_input, &w.layout.mem, &theme);
+        let s = draw_mem(&mem_input, &w.layout.mem, &theme, &mut box_maps);
         output.push_str(&s);
         ran_boxes.push("mem".to_string());
     }
@@ -382,7 +385,7 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
         let counters = t.backend.if_counters().unwrap_or_default();
         let addrs = t.backend.iface_addrs().unwrap_or_default();
         let net_input = assemble_net(&mut w.state, &counters, &addrs, update_ms, term_w);
-        let s = draw_net(&net_input, &w.layout.net, &theme);
+        let s = draw_net(&net_input, &w.layout.net, &theme, &mut box_maps);
         output.push_str(&s);
         ran_boxes.push("net".to_string());
         // C++ :1508-1509 stores old_ip AFTER draw consumed the previous
@@ -430,13 +433,16 @@ pub fn tick(w: &mut World, sys: &mut dyn Sys, t: TickInput<'_>) -> TickOutput {
         // cpp:637: pass force_redraw / no_update to Proc::draw.
         let mut proc_input = proc_input;
         proc_input.force_redraw = force_redraw;
-        // Box click-maps ride to input dispatch via `state.mouse_maps`
-        // (C++ `Input::mouse_mappings` fills during draw).
-        let mut box_maps = Vec::new();
         let s = draw_proc(&proc_input, &w.layout.proc, &theme, &mut box_maps);
-        w.state.mouse_maps = box_maps;
         output.push_str(&s);
         ran_boxes.push("proc".to_string());
+    }
+    // Publish this tick's click-maps even when some boxes skipped (each
+    // draw appends only its own zones).
+    // Zones refresh on redraw ticks and persist across incremental ones
+    // (C++ `Input::mouse_mappings` is never cleared).
+    if force_redraw {
+        w.state.mouse_maps = std::mem::take(&mut box_maps);
     }
 
     // ── Pause gate (overlay dim) ───────────────────────────────────────────

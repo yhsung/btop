@@ -26,6 +26,7 @@ use crate::ansi::{mv_to, FX_B, FX_UB};
 use crate::boxes::{create_box, human_bytes, ljust_b, rjust_b, CommonFlags, NetGeom, Palette};
 use crate::meter_graph::{Graph, GraphOpts};
 use crate::theme_grad::gradient;
+use btop_tools::mouse::MouseMap;
 use btop_tools::strtools::{floating_humanizer, uresize, HumanOpts};
 use std::collections::HashMap;
 
@@ -105,7 +106,12 @@ pub struct NetDrawInput<'a> {
 
 /// Draw the net box. `geom` is the net part of `Layout` (calcSizes);
 /// `theme` is the Default-keyed map (`default_theme()`).
-pub fn draw_net(input: &NetDrawInput, geom: &NetGeom, theme: &HashMap<String, String>) -> String {
+pub fn draw_net(
+    input: &NetDrawInput,
+    geom: &NetGeom,
+    theme: &HashMap<String, String>,
+    maps: &mut Vec<MouseMap>,
+) -> String {
     // data_same → cached out (Graph::operator(data_same=true) returns `out`).
     if input.data_same {
         return input.prev.unwrap_or("").to_string();
@@ -209,7 +215,7 @@ pub fn draw_net(input: &NetDrawInput, geom: &NetGeom, theme: &HashMap<String, St
             f.common.tty_mode,
             f.common.rounded,
         );
-        fr += &render_frame_buttons(input, geom, &pal, &title_left, &title_right, i_size);
+        fr += &render_frame_buttons(input, geom, &pal, &title_left, &title_right, i_size, maps);
         fr
     } else {
         String::new()
@@ -435,6 +441,7 @@ fn render_frame_buttons(
     title_left: &str,
     title_right: &str,
     i_size: i64,
+    maps: &mut Vec<MouseMap>,
 ) -> String {
     let f = &input.flags;
     let (x, y, width) = (geom.base.x, geom.base.y, geom.base.width);
@@ -453,6 +460,21 @@ fn render_frame_buttons(
     out += " n";
     out += crate::symbols::box_chars::RIGHT;
     out += title_right;
+    // Interface selector + zero (:1544-1550) ride with the pixels.
+    maps.push(MouseMap {
+        x: x + width - i_size - 8,
+        y,
+        w: 3,
+        h: 1,
+        action: "b".to_string(),
+    });
+    maps.push(MouseMap {
+        x: x + width - 6,
+        y,
+        w: 3,
+        h: 1,
+        action: "n".to_string(),
+    });
     out += &mv_to(y, x + width - i_size - 15);
     out += title_left;
     out += &pal.hi_fg;
@@ -463,6 +485,13 @@ fn render_frame_buttons(
     out += &pal.title;
     out += "ero";
     out += title_right;
+    maps.push(MouseMap {
+        x: x + width - i_size - 14,
+        y,
+        w: 4,
+        h: 1,
+        action: "z".to_string(),
+    });
     if width - i_size - 20 > 6 {
         out += &mv_to(y, x + width - i_size - 21);
         out += title_left;
@@ -474,6 +503,13 @@ fn render_frame_buttons(
         out += &pal.title;
         out += "uto";
         out += title_right;
+        maps.push(MouseMap {
+            x: x + width - i_size - 20,
+            y,
+            w: 4,
+            h: 1,
+            action: "a".to_string(),
+        });
     }
     if width - i_size - 20 > 13 {
         out += &mv_to(y, x + width - i_size - 27);
@@ -488,6 +524,13 @@ fn render_frame_buttons(
         out += &pal.title;
         out += "nc";
         out += title_right;
+        maps.push(MouseMap {
+            x: x + width - i_size - 26,
+            y,
+            w: 4,
+            h: 1,
+            action: "y".to_string(),
+        });
     }
     out
 }

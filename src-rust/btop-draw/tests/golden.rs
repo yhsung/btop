@@ -425,6 +425,36 @@ fn cpu_test_input<'a>(
     }
 }
 
+/// Title-button click zones (`Input::mouse_mappings`, btop_draw.cpp
+/// per-box sections): rects mirror the C++ `{line, col, h, w}` entries.
+fn zone(maps: &[btop_tools::mouse::MouseMap], action: &str) -> Option<(i64, i64, i64, i64)> {
+    maps.iter()
+        .find(|m| m.action == action)
+        .map(|m| (m.x, m.y, m.w, m.h))
+}
+
+#[test]
+fn cpu_title_zones_match_cpp_rects() {
+    let percent = fixed_cpu_percent();
+    let cores = fixed_cpu_cores();
+    let temp = fixed_cpu_temp();
+    let input = cpu_test_input(&percent, &cores, &temp);
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let g = &layout.cpu.base;
+    let mut maps = Vec::new();
+    let _ = draw_cpu(&input, &layout.cpu, &theme, &mut maps);
+    let update = format!("{}ms", input.flags.update_ms);
+    // :628-638 {line, col, h, w} → {x: col, y: line, w, h}.
+    assert_eq!(zone(&maps, "m"), Some((g.x + 11, g.y, 4, 1)));
+    assert_eq!(zone(&maps, "p"), Some((g.x + 17, g.y, 8, 1)));
+    assert_eq!(
+        zone(&maps, "-"),
+        Some((g.x + g.width - update.len() as i64 - 7, g.y, 2, 1))
+    );
+    assert_eq!(zone(&maps, "+"), Some((g.x + g.width - 5, g.y, 2, 1)));
+}
+
 #[test]
 fn byte_parity_cpu_S0() {
     let percent = fixed_cpu_percent();
@@ -433,7 +463,7 @@ fn byte_parity_cpu_S0() {
     let input = cpu_test_input(&percent, &cores, &temp);
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = draw_cpu(&input, &layout.cpu, &theme);
+    let out = draw_cpu(&input, &layout.cpu, &theme, &mut Vec::new());
     assert_eq!(out.as_bytes(), fixture_bytes("cpu_S0.ans"));
 }
 
@@ -446,7 +476,7 @@ fn byte_parity_cpu_S1() {
     input.term_width = 160;
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(160, 48));
-    let out = draw_cpu(&input, &layout.cpu, &theme);
+    let out = draw_cpu(&input, &layout.cpu, &theme, &mut Vec::new());
     assert_eq!(out.as_bytes(), fixture_bytes("cpu_S1.ans"));
 }
 
@@ -462,7 +492,10 @@ fn cpu_data_same_returns_prev() {
     input.prev = Some("CACHED");
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    assert_eq!(draw_cpu(&input, &layout.cpu, &theme), "CACHED");
+    assert_eq!(
+        draw_cpu(&input, &layout.cpu, &theme, &mut Vec::new()),
+        "CACHED"
+    );
 }
 
 // ── Fix 3: smoke tests for the previously no-op branches ─────────────────
@@ -487,7 +520,7 @@ fn cpu_smoke_battery() {
     });
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = draw_cpu(&input, &layout.cpu, &theme);
+    let out = draw_cpu(&input, &layout.cpu, &theme, &mut Vec::new());
     assert!(out.contains("BAT"), "battery title missing");
     assert!(out.contains("85%"), "battery percent missing");
 }
@@ -503,7 +536,7 @@ fn cpu_smoke_watts() {
     input.usage_watts = 65.5;
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = draw_cpu(&input, &layout.cpu, &theme);
+    let out = draw_cpu(&input, &layout.cpu, &theme, &mut Vec::new());
     assert!(out.contains('W'), "watts suffix missing");
 }
 
@@ -518,7 +551,7 @@ fn cpu_smoke_freq() {
     input.cpu_hz = "3.40GHz";
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = draw_cpu(&input, &layout.cpu, &theme);
+    let out = draw_cpu(&input, &layout.cpu, &theme, &mut Vec::new());
     assert!(out.contains("GHz"), "cpu freq readout missing");
 }
 
@@ -532,7 +565,7 @@ fn cpu_smoke_uptime() {
     input.uptime_secs = 3661;
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = draw_cpu(&input, &layout.cpu, &theme);
+    let out = draw_cpu(&input, &layout.cpu, &theme, &mut Vec::new());
     assert!(out.contains("up"), "uptime readout missing");
 }
 
@@ -545,7 +578,7 @@ fn cpu_smoke_container() {
     input.container_engine = Some("docker");
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = draw_cpu(&input, &layout.cpu, &theme);
+    let out = draw_cpu(&input, &layout.cpu, &theme, &mut Vec::new());
     assert!(out.contains("docker"), "container engine name missing");
 }
 
@@ -561,7 +594,7 @@ fn cpu_smoke_gpu_brief_omitted() {
     input.flags.show_gpu = true;
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = draw_cpu(&input, &layout.cpu, &theme);
+    let out = draw_cpu(&input, &layout.cpu, &theme, &mut Vec::new());
     assert!(!out.is_empty(), "gpu-flagged draw is empty");
     assert!(out.contains("CPU "), "meter line missing");
 }
@@ -939,6 +972,27 @@ fn mem_test_input<'a>(
 }
 
 #[test]
+fn mem_title_zones_match_cpp_rects() {
+    let stats = fixed_mem_stats();
+    let percent = fixed_mem_percent();
+    let (disks, order) = fixed_mem_disks();
+    let input = mem_test_input(&stats, &percent, &disks, &order);
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let g = &layout.mem.base;
+    let mut maps = Vec::new();
+    let _ = btop_draw::mem::draw_mem(&input, &layout.mem, &theme, &mut maps);
+    // :2488-2489 disks title; :1338-1339 io title (show_io_stat default).
+    let d_x = if input.flags.show_disks {
+        layout.mem.divider + 3
+    } else {
+        g.x + g.width - 8
+    };
+    assert_eq!(zone(&maps, "d"), Some((d_x, g.y, 5, 1)));
+    assert_eq!(zone(&maps, "i"), Some((g.x + g.width - 5, g.y, 2, 1)));
+}
+
+#[test]
 fn byte_parity_mem_S0() {
     let stats = fixed_mem_stats();
     let percent = fixed_mem_percent();
@@ -946,7 +1000,7 @@ fn byte_parity_mem_S0() {
     let input = mem_test_input(&stats, &percent, &disks, &order);
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme, &mut Vec::new());
     assert_eq!(out.as_bytes(), fixture_bytes("mem_S0.ans"));
 }
 
@@ -958,7 +1012,7 @@ fn byte_parity_mem_S1() {
     let input = mem_test_input(&stats, &percent, &disks, &order);
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(160, 48));
-    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme, &mut Vec::new());
     assert_eq!(out.as_bytes(), fixture_bytes("mem_S1.ans"));
 }
 
@@ -973,7 +1027,7 @@ fn mem_data_same_returns_prev() {
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
     assert_eq!(
-        btop_draw::mem::draw_mem(&input, &layout.mem, &theme),
+        btop_draw::mem::draw_mem(&input, &layout.mem, &theme, &mut Vec::new()),
         "CACHED"
     );
 }
@@ -989,19 +1043,19 @@ fn mem_smoke_no_swap() {
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
     let mut input = mem_test_input(&stats, &percent, &disks, &order);
     input.flags.show_swap = false;
-    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme, &mut Vec::new());
     assert!(!out.contains("Swap:"), "swap block should be hidden");
     assert!(out.contains("Total:"), "mem section missing");
     let mut input2 = mem_test_input(&stats, &percent, &disks, &order);
     input2.has_swap = false;
-    let out2 = btop_draw::mem::draw_mem(&input2, &layout.mem, &theme);
+    let out2 = btop_draw::mem::draw_mem(&input2, &layout.mem, &theme, &mut Vec::new());
     assert!(
         !out2.contains("Swap:"),
         "swap block should be hidden (no swap)"
     );
     let mut input3 = mem_test_input(&stats, &percent, &disks, &order);
     input3.flags.swap_disk = true;
-    let out3 = btop_draw::mem::draw_mem(&input3, &layout.mem, &theme);
+    let out3 = btop_draw::mem::draw_mem(&input3, &layout.mem, &theme, &mut Vec::new());
     assert!(
         !out3.contains("Swap:"),
         "swap block should be hidden (swap_disk)"
@@ -1022,12 +1076,12 @@ fn mem_smoke_tall_graph() {
     assert_eq!(layout.mem.graph_height, 2);
     assert_eq!(layout.mem.mem_size, 3);
     let input = mem_test_input(&stats, &percent, &disks, &order);
-    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme, &mut Vec::new());
     assert!(out.contains("Total:"), "mem section missing");
     assert!(out.contains('▲') || out.contains('▼') || out.contains('%'));
     let mut meters = mem_test_input(&stats, &percent, &disks, &order);
     meters.flags.use_graphs = false;
-    let out2 = btop_draw::mem::draw_mem(&meters, &layout.mem, &theme);
+    let out2 = btop_draw::mem::draw_mem(&meters, &layout.mem, &theme, &mut Vec::new());
     assert!(out2.contains("Total:"), "meter variant missing");
     assert!(out2.contains('■'), "meter blocks missing");
 }
@@ -1043,7 +1097,7 @@ fn mem_smoke_tiny_height() {
     let layout = calc_sizes(&LayoutInput::defaults(100, 24));
     assert_eq!(layout.mem.base.height, 9);
     let input = mem_test_input(&stats, &percent, &disks, &order);
-    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme, &mut Vec::new());
     assert!(!out.contains("Swap:"), "swap should not fit at height 9");
     assert!(out.contains("Total:"), "mem section missing");
 }
@@ -1060,7 +1114,7 @@ fn mem_smoke_narrow() {
     assert!(layout.mem.mem_width <= 21);
     assert_eq!(layout.mem.mem_size, 3);
     let input = mem_test_input(&stats, &percent, &disks, &order);
-    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme, &mut Vec::new());
     assert!(out.contains("Total:"), "mem section missing");
     assert!(out.contains("Avail"), "narrow titles missing");
 }
@@ -1080,7 +1134,7 @@ fn mem_smoke_no_disks() {
     let mut li = LayoutInput::defaults(100, 30);
     li.show_disks = false;
     let layout = calc_sizes(&li);
-    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme, &mut Vec::new());
     assert!(!out.contains("93G"), "disk rows should be hidden");
     assert!(!out.contains(" IO"), "io title should be hidden");
     assert!(out.contains("Total:"), "mem section missing");
@@ -1097,7 +1151,7 @@ fn mem_smoke_meters() {
     input.flags.use_graphs = false;
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme, &mut Vec::new());
     assert!(out.contains("Total:"), "mem section missing");
     assert!(out.contains('■'), "meter blocks missing");
 }
@@ -1112,13 +1166,13 @@ fn mem_smoke_io_mode() {
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
     let mut input = mem_test_input(&stats, &percent, &disks, &order);
     input.flags.io_mode = true;
-    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme, &mut Vec::new());
     assert!(out.contains('▲'), "io read marker missing");
     assert!(out.contains('▼'), "io write marker missing");
     let mut combined = mem_test_input(&stats, &percent, &disks, &order);
     combined.flags.io_mode = true;
     combined.flags.io_graph_combined = true;
-    let out2 = btop_draw::mem::draw_mem(&combined, &layout.mem, &theme);
+    let out2 = btop_draw::mem::draw_mem(&combined, &layout.mem, &theme, &mut Vec::new());
     assert!(out2.contains("RW") || out2.contains('▲') || out2.contains('▼'));
 }
 
@@ -1132,7 +1186,7 @@ fn mem_smoke_no_io_stat() {
     input.flags.show_io_stat = false;
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme);
+    let out = btop_draw::mem::draw_mem(&input, &layout.mem, &theme, &mut Vec::new());
     assert!(!out.contains("IO"), "activity row should be hidden");
     assert!(out.contains('■'), "disk meter blocks missing");
 }
@@ -1230,6 +1284,45 @@ fn net_test_input<'a>(
 }
 
 #[test]
+fn net_title_zones_match_cpp_rects() {
+    let bw = fixed_net_bandwidth();
+    let stat = fixed_net_stat();
+    let gm = fixed_net_graph_max();
+    let input = net_test_input(&bw, &stat, &gm);
+    let theme = default_theme();
+    let layout = calc_sizes(&LayoutInput::defaults(100, 30));
+    let g = &layout.net.base;
+    let mut maps = Vec::new();
+    let _ = btop_draw::net::draw_net(&input, &layout.net, &theme, &mut maps);
+    // :1544-1560; iface "eth0" → i_size 4; a/y gates mirror the width.
+    let i_size = 4;
+    assert_eq!(
+        zone(&maps, "b"),
+        Some((g.x + g.width - i_size - 8, g.y, 3, 1))
+    );
+    assert_eq!(zone(&maps, "n"), Some((g.x + g.width - 6, g.y, 3, 1)));
+    assert_eq!(
+        zone(&maps, "z"),
+        Some((g.x + g.width - i_size - 14, g.y, 4, 1))
+    );
+    let wide = g.width - i_size - 20;
+    assert_eq!(zone(&maps, "a").is_some(), wide > 6);
+    assert_eq!(zone(&maps, "y").is_some(), wide > 13);
+    if wide > 6 {
+        assert_eq!(
+            zone(&maps, "a"),
+            Some((g.x + g.width - i_size - 20, g.y, 4, 1))
+        );
+    }
+    if wide > 13 {
+        assert_eq!(
+            zone(&maps, "y"),
+            Some((g.x + g.width - i_size - 26, g.y, 4, 1))
+        );
+    }
+}
+
+#[test]
 fn byte_parity_net_S0() {
     let bw = fixed_net_bandwidth();
     let stat = fixed_net_stat();
@@ -1237,7 +1330,7 @@ fn byte_parity_net_S0() {
     let input = net_test_input(&bw, &stat, &gm);
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = btop_draw::net::draw_net(&input, &layout.net, &theme);
+    let out = btop_draw::net::draw_net(&input, &layout.net, &theme, &mut Vec::new());
     assert_eq!(out.as_bytes(), fixture_bytes("net_S0.ans"));
 }
 
@@ -1249,7 +1342,7 @@ fn byte_parity_net_S1() {
     let input = net_test_input(&bw, &stat, &gm);
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(160, 48));
-    let out = btop_draw::net::draw_net(&input, &layout.net, &theme);
+    let out = btop_draw::net::draw_net(&input, &layout.net, &theme, &mut Vec::new());
     assert_eq!(out.as_bytes(), fixture_bytes("net_S1.ans"));
 }
 
@@ -1264,7 +1357,7 @@ fn net_data_same_returns_prev() {
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
     assert_eq!(
-        btop_draw::net::draw_net(&input, &layout.net, &theme),
+        btop_draw::net::draw_net(&input, &layout.net, &theme, &mut Vec::new()),
         "CACHED"
     );
 }
@@ -1279,7 +1372,7 @@ fn net_smoke_disconnected() {
     input.connected = false;
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = btop_draw::net::draw_net(&input, &layout.net, &theme);
+    let out = btop_draw::net::draw_net(&input, &layout.net, &theme, &mut Vec::new());
     assert!(
         out.contains("Total:"),
         "stat rows missing when disconnected"
@@ -1296,7 +1389,7 @@ fn net_smoke_swapped() {
     input.flags.swap_upload_download = true;
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = btop_draw::net::draw_net(&input, &layout.net, &theme);
+    let out = btop_draw::net::draw_net(&input, &layout.net, &theme, &mut Vec::new());
     assert!(out.contains('▲'), "upload marker missing");
     assert!(out.contains('▼'), "download marker missing");
 }
@@ -1312,7 +1405,7 @@ fn net_smoke_no_ip() {
     input.ipv6 = "";
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = btop_draw::net::draw_net(&input, &layout.net, &theme);
+    let out = btop_draw::net::draw_net(&input, &layout.net, &theme, &mut Vec::new());
     assert!(out.contains("eth0"), "iface selector missing");
 }
 
@@ -1325,7 +1418,7 @@ fn net_smoke_empty_bandwidth() {
     let input = net_test_input(&bw, &stat, &gm);
     let theme = default_theme();
     let layout = calc_sizes(&LayoutInput::defaults(100, 30));
-    let out = btop_draw::net::draw_net(&input, &layout.net, &theme);
+    let out = btop_draw::net::draw_net(&input, &layout.net, &theme, &mut Vec::new());
     assert!(!out.is_empty(), "frame should still render");
     assert!(!out.contains("Total:"), "no stats without bandwidth");
 }
