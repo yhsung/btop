@@ -80,6 +80,7 @@ fn ctx() -> MenuCtx {
         term_h: 30,
         target_pid: 0,
         target_name: String::new(),
+        mouse_pos: None,
     }
 }
 

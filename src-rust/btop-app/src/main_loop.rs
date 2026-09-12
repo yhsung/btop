@@ -17,6 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use btop_collect::backend::MacOsBackend;
 use btop_input::actions::{handle_key, Action, InputState, ViewState};
+use btop_input::keys::{decode_key, decode_mouse_pos};
 use btop_input::textedit::TextEdit;
 use btop_menu::menus::MenuCtx;
 use btop_runner::sink::{execute_all, execute_single, Sys, World};
@@ -532,19 +533,36 @@ fn dispatch_menu(
     sys: &mut dyn Sys,
     term_w: usize,
     term_h: usize,
-    key: &str,
+    raw: &str,
 ) -> Vec<btop_runner::sink::RunRequest> {
+    // Menu-path mouse decode (C++ `Input::get` fills `mouse_pos` + maps
+    // before `Menu::process`): SGR becomes its mapped button action here
+    // so menu arms see `mouse_click`/`button_N`, never raw escapes.
+    let filtering = world.config.get_b("proc_filtering").unwrap_or(false);
+    let key = decode_key(
+        raw,
+        &world.state.mouse_maps,
+        &world.menu.mouse_maps,
+        filtering,
+        true,
+    );
+    let mouse_pos = decode_mouse_pos(raw);
     let ctx = MenuCtx {
         term_w,
         term_h,
         target_pid: 0,
         target_name: String::new(),
+        mouse_pos,
     };
     // Disjoint-field borrows (`menu`/`store`/`config`/`lists`) in one
     // expression — the borrow checker accepts these as separate fields.
-    let actions = world
-        .menu
-        .process(key, &ctx, &mut world.store, &mut world.config, &world.lists);
+    let actions = world.menu.process(
+        &key,
+        &ctx,
+        &mut world.store,
+        &mut world.config,
+        &world.lists,
+    );
     // Same logic/render split as the ShowMenu arm in sink.rs: rebuild the
     // overlay bytes after every menu keypress (theme falls back to Default
     // until the Theme-file port lands).

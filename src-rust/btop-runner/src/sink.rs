@@ -735,6 +735,7 @@ pub fn execute_single(
                 term_h,
                 target_pid,
                 target_name,
+                mouse_pos: None,
             };
             let acts = w
                 .menu

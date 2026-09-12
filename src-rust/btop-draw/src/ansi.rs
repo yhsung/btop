@@ -57,6 +57,10 @@ pub const FX_I: &str = "\x1b[3m";
 pub const FX_UL: &str = "\x1b[4m";
 /// Underline off (`Fx::uul`).
 pub const FX_UUL: &str = "\x1b[24m";
+/// Blink on (`Fx::bl`).
+pub const FX_BL: &str = "\x1b[5m";
+/// Blink off (`Fx::ubl`).
+pub const FX_UBL: &str = "\x1b[25m";
 /// Reset base (`Fx::reset_base`); runtime `Fx::reset` appends Term fg/bg.
 pub const FX_RESET_BASE: &str = "\x1b[0m";
 

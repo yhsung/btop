@@ -24,7 +24,9 @@
 use std::collections::HashMap;
 
 use btop_config::theme::hex_to_color;
-use btop_draw::ansi::{mv_d, mv_l, mv_r, mv_to, mv_u, FX_B, FX_UB, MV_RESTORE, MV_SAVE};
+use btop_draw::ansi::{
+    mv_d, mv_l, mv_r, mv_to, mv_u, FX_B, FX_BL, FX_UB, FX_UBL, MV_RESTORE, MV_SAVE,
+};
 use btop_draw::boxes::{banner_gen, create_box, BANNER_SRC};
 use btop_draw::symbols::box_chars::{
     DIV_DOWN, DIV_LEFT, DIV_RIGHT, DIV_UP, DOWN, ENTER, H_LINE, LEFT, LEFT_DOWN, LEFT_UP, RIGHT,
@@ -676,7 +678,231 @@ pub fn help_overlay(
     (out, Vec::new())
 }
 
-/// `signalSend` confirmation box (btop_menu.cpp:1146-1158): `MsgBox{50,
+/// `reniceMenu` box (`:1811-1860`): 50x13 box with the PID title, the
+/// nice-value entry line and hint rows. Keyboard-only upstream (no mouse
+/// zones); the value shows `renice_edit` while typing.
+pub fn renice_overlay(
+    pid: u64,
+    pname: &str,
+    nice: i32,
+    edit: &str,
+    ot: &OverlayTheme,
+    term_w: i64,
+    term_h: i64,
+) -> (String, Vec<MouseMap>) {
+    let x = term_w / 2 - 25;
+    let y = term_h / 2 - 6;
+    let mut out = create_box(
+        x + 2,
+        y,
+        50,
+        13,
+        &ot.hi_fg,
+        true,
+        "renice",
+        "",
+        0,
+        &ot.div_line,
+        &ot.hi_fg,
+        &ot.title,
+        &ot.reset,
+        false,
+        true,
+    );
+    out += &format!(
+        "{}{FX_B}{}{}",
+        mv_to(y + 2, x + 3),
+        ot.title,
+        cjust(
+            &format!("Renice PID {pid} ({})", uresize(pname, 15, false)),
+            48,
+            false,
+            true
+        ),
+    );
+    let mut cy = y + 4;
+    let shown = if edit.is_empty() {
+        nice.to_string()
+    } else {
+        edit.to_string()
+    };
+    out += &format!(
+        "{}{}{}{:>30}{}{shown}{}{FX_BL}█{FX_UBL}",
+        mv_to(cy, x + 3),
+        ot.main_fg,
+        FX_UB,
+        "Enter nice value: ",
+        ot.hi_fg,
+        ot.main_fg,
+    );
+    cy += 2;
+    for (key, desc) in [
+        ("↑ ↓", "To change value."),
+        ("← →", "To change value by 5."),
+        ("0-9", "Enter manually."),
+        ("ENTER", "To set nice value."),
+        ("ESC or 'q'", "To abort."),
+    ] {
+        // `Fx::b + hi_fg + rjust(key) + main_fg + ub + " | desc"`.
+        out += &format!(
+            "{}{FX_B}{}{key:>20}{}{FX_UB} | {desc}",
+            mv_to(cy, x + 3),
+            ot.hi_fg,
+            ot.main_fg,
+        );
+        cy += 1;
+    }
+    out += &ot.reset;
+    (out, Vec::new())
+}
+
+/// `signalChoose` grid (`:1011-1083`): 78x19 box with the PID title, a
+/// typed-number line and the 1..31 (minus 16) signal grid, 5 per row.
+/// `selected` is `signal_selected` (-1 = none). Grid cells register
+/// `button_N` zones plus wide `enter`/`escape` rows, like C++.
+pub fn signal_choose_overlay(
+    pid: u64,
+    pname: &str,
+    selected: i32,
+    ot: &OverlayTheme,
+    term_w: i64,
+    term_h: i64,
+) -> (String, Vec<MouseMap>) {
+    let x = term_w / 2 - 40;
+    let y = term_h / 2 - 9;
+    let mut maps = Vec::new();
+    let mut out = create_box(
+        x + 2,
+        y,
+        78,
+        19,
+        &ot.hi_fg,
+        true,
+        "signals",
+        "",
+        0,
+        &ot.div_line,
+        &ot.hi_fg,
+        &ot.title,
+        &ot.reset,
+        false,
+        true,
+    );
+    out += &format!(
+        "{}{}{FX_B}{}",
+        mv_to(y + 2, x + 3),
+        ot.title,
+        cjust(
+            &format!("Send signal to PID {pid} ({})", uresize(pname, 30, false)),
+            76,
+            false,
+            true
+        )
+    );
+    let mut cy = y + 4;
+    let typed = if selected >= 0 {
+        selected.to_string()
+    } else {
+        String::new()
+    };
+    out += &format!(
+        "{}{}{}{:>48}{}{typed}{}{FX_BL}█{FX_UBL}",
+        mv_to(cy, x + 3),
+        ot.main_fg,
+        FX_UB,
+        "Enter signal number: ",
+        ot.hi_fg,
+        ot.main_fg,
+    );
+    cy += 1;
+    let mut i = 0;
+    for count in 1..=31 {
+        if count == 16 {
+            continue;
+        }
+        let sig = P_SIGNALS.get(count as usize).copied().unwrap_or("?");
+        if i % 5 == 0 {
+            cy += 1;
+        }
+        let cx = x + 4 + (i % 5) * 15;
+        i += 1;
+        out += &mv_to(cy, cx);
+        if count == selected {
+            out += &format!(
+                "{}{}{FX_B}{:<3}{:<12}{}",
+                ot.selected_bg,
+                ot.selected_fg,
+                count,
+                format!("({sig})"),
+                ot.reset
+            );
+        } else {
+            out += &format!(
+                "{}{:<3}{}{:<12}",
+                ot.hi_fg,
+                count,
+                ot.main_fg,
+                format!("({sig})")
+            );
+        }
+        maps.push(MouseMap {
+            x: cx,
+            y: cy,
+            w: 15,
+            h: 1,
+            action: format!("button_{count}"),
+        });
+    }
+    cy += 1;
+    // `Fx::b + hi_fg + rjust(key) + main_fg + ub + " | desc"`.
+    out += &format!(
+        "{}{FX_B}{}{:>33}{}{FX_UB} | To choose signal.",
+        mv_to(cy, x + 3),
+        ot.hi_fg,
+        "↑ ↓ ← →",
+        ot.main_fg
+    );
+    cy += 1;
+    out += &format!(
+        "{}{FX_B}{}{:>33}{}{FX_UB} | Enter manually.",
+        mv_to(cy, x + 3),
+        ot.hi_fg,
+        "0-9",
+        ot.main_fg
+    );
+    cy += 1;
+    out += &format!(
+        "{}{FX_B}{}{:>33}{}{FX_UB} | To send signal.",
+        mv_to(cy, x + 3),
+        ot.hi_fg,
+        "ENTER",
+        ot.main_fg
+    );
+    maps.push(MouseMap {
+        x,
+        y: cy,
+        w: 73,
+        h: 1,
+        action: "enter".to_string(),
+    });
+    cy += 1;
+    out += &format!(
+        "{}{FX_B}{}{:>33}{}{FX_UB} | To abort.",
+        mv_to(cy, x + 3),
+        ot.hi_fg,
+        "ESC or \"q\"",
+        ot.main_fg
+    );
+    maps.push(MouseMap {
+        x,
+        y: cy,
+        w: 73,
+        h: 1,
+        action: "escape".to_string(),
+    });
+    out += &ot.reset;
+    (out, maps)
+}
 /// 1, content, "signal"}`. Content lines carry their colors inline (as in
 /// C++); the title names the signal except for 0/1/17/out-of-range.
 /// `msg_selected`: 0 = Yes focused, 1 = No.
@@ -731,8 +957,8 @@ pub fn signal_send_overlay(
 }
 
 /// Rebuild [`crate::menus::MenuSystem::overlay`] + `mouse_maps` for the
-/// `SignalReturn`/`Renice` menus render nothing here (out of golden scope
-/// — P3 adds them if needed); `SignalSend` renders its confirmation box.
+/// currently active menu. `SizeError`/`SignalReturn` render nothing here
+/// (out of golden scope).
 #[allow(clippy::too_many_arguments)]
 pub fn render_into(
     current: crate::menus::Menus,
@@ -745,6 +971,9 @@ pub fn render_into(
     signal_pname: &str,
     signal_to_send: i32,
     msg_selected: i32,
+    signal_selected: i32,
+    renice_nice: i32,
+    renice_edit: &str,
     store: &OptionsStore,
     lists: &HashMap<String, Vec<String>>,
     theme: &HashMap<String, String>,
@@ -763,6 +992,23 @@ pub fn render_into(
             signal_pname,
             signal_to_send,
             msg_selected,
+            &ot,
+            term_w,
+            term_h,
+        ),
+        crate::menus::Menus::SignalChoose => signal_choose_overlay(
+            signal_pid,
+            signal_pname,
+            signal_selected,
+            &ot,
+            term_w,
+            term_h,
+        ),
+        crate::menus::Menus::Renice => renice_overlay(
+            signal_pid,
+            signal_pname,
+            renice_nice,
+            renice_edit,
             &ot,
             term_w,
             term_h,

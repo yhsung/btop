@@ -135,6 +135,9 @@ pub struct MenuCtx {
     pub term_h: usize,
     pub target_pid: u64,
     pub target_name: String,
+    /// Decoded SGR position for `mouse_click` arms (`Input::mouse_pos`,
+    /// btop_input.cpp:167-168); `None` for keyboard keys.
+    pub mouse_pos: Option<(i64, i64)>,
 }
 
 /// Owned menu system: mask + current + C++ globals/statics.
@@ -656,9 +659,6 @@ impl MenuSystem {
     /// assembly. `selPred` is recomputed per call via
     /// [`classify_option`](options::classify_option) (`:1605-1621`:
     /// `isEditable = !isBrowsable && (isString || isInt)` — ints ARE editable).
-    /// `mouse_click` zone hits are a Task 6/P3 duty (no geometry kept here):
-    /// returns `NoChange` (documented deviation — C++ `:1417-1429`
-    /// selects/edits on inside clicks and closes on outside ones).
     /// `theme_refresh`/`screen_redraw` flags are maintained from the returned
     /// actions (per the Task 4 store/sink split): `ApplyTheme` sets both
     /// (`:1720-1726` forces `screen_redraw`), `RecalcLayout`/`UpdateClock`
@@ -732,6 +732,43 @@ impl MenuSystem {
         }
 
         if key == "mouse_click" {
+            // :1417-1429: outside the box closes; inside the left column
+            // selects the row, re-clicking an editable row enters edit
+            // mode (same `begin_edit` as the enter arm below).
+            let Some((mouse_x, mouse_y)) = ctx.mouse_pos else {
+                return (MenuOutcome::NoChange, vec![]);
+            };
+            let (ox, oy, oheight) =
+                crate::overlay::options_geometry(ctx.term_w as i64, ctx.term_h as i64);
+            if mouse_x < ox || mouse_x > ox + 80 || mouse_y < oy + 6 || mouse_y > oy + 6 + oheight {
+                return (MenuOutcome::Closed, vec![]);
+            }
+            if mouse_x < ox + 30 && mouse_y > oy + 8 {
+                let m_select = ((mouse_y - oy - 8) as f64 / 2.0).ceil() as usize - 1;
+                // C++ assigns unclamped; clamp to the page (Rust indexes
+                // checked paths only, and this avoids OOB panics).
+                let m_select = m_select.min(smax);
+                if self.options.selected != m_select {
+                    self.options.selected = m_select;
+                    return (MenuOutcome::Changed, vec![]);
+                }
+                let cur_name: Option<&str> = CATEGORIES[tab]
+                    .get(ih * self.options.page + self.options.selected)
+                    .map(|e| e[0]);
+                let editable = cur_name.is_some_and(|nm| {
+                    matches!(
+                        options::classify_option(nm, store),
+                        OptKind::Editable | OptKind::Int | OptKind::Str
+                    )
+                });
+                if editable {
+                    let name = cur_name.expect("editable implies a current option");
+                    let (text, numeric) = begin_edit_text(name, store);
+                    self.options.editor = TextEdit::new(text, numeric);
+                    self.options.editing = true;
+                    return (MenuOutcome::Changed, vec![]);
+                }
+            }
             return (MenuOutcome::NoChange, vec![]);
         }
 
@@ -886,6 +923,9 @@ impl MenuSystem {
             &self.signal_pname,
             self.signal_to_send,
             i32::from(self.msg_box.selected),
+            self.signal_selected,
+            self.renice_nice,
+            &self.renice_edit,
             store,
             lists,
             theme,
@@ -947,6 +987,7 @@ mod tests {
             term_h: 30,
             target_pid: 1234,
             target_name: String::new(),
+            mouse_pos: None,
         }
     }
 
@@ -1054,7 +1095,6 @@ mod tests {
     fn signal_send_renders_confirmation_with_pid() {
         // `signalSend` redraw block (:1146-1158): confirmation box naming
         // the signal and target pid; button zones ride along for mouse.
-        use crate::overlay::OverlayTheme;
         let mut sys = MenuSystem::default();
         let mut s = store();
         let mut cfg = Config::new();
@@ -1064,6 +1104,7 @@ mod tests {
             term_h: 40,
             target_pid: 74310,
             target_name: "opencode".to_string(),
+            mouse_pos: None,
         };
         let _ = open(&mut sys, Menus::SignalSend, 15, &c, &mut s, &mut cfg, &l);
         assert!(sys.active);
@@ -1085,6 +1126,66 @@ mod tests {
             sys.mouse_maps.iter().any(|m| m.action == "button2"),
             "No button clickable"
         );
+    }
+
+    #[test]
+    fn signal_choose_renders_grid_with_zones() {
+        // `signalChoose` draw (:1011-1083): PID title, typed line, 30-cell
+        // grid (minus 16) with button_N zones + enter/escape rows.
+        let mut sys = MenuSystem::default();
+        let mut s = store();
+        let mut cfg = Config::new();
+        let l = lists();
+        let c = MenuCtx {
+            term_w: 120,
+            term_h: 40,
+            target_pid: 99,
+            target_name: "procname".to_string(),
+            mouse_pos: None,
+        };
+        let _ = open(&mut sys, Menus::SignalChoose, -1, &c, &mut s, &mut cfg, &l);
+        assert!(sys.active);
+        sys.render_overlay(&s, &l, &btop_config::theme::default_theme(), 120, 40);
+        assert!(sys.overlay.contains("Send signal to PID 99"), "title");
+        assert!(sys.overlay.contains("SIGKILL"), "grid names");
+        assert!(
+            sys.mouse_maps.iter().any(|m| m.action == "button_9"),
+            "SIGKILL cell clickable"
+        );
+        assert!(
+            sys.mouse_maps.iter().any(|m| m.action == "enter"),
+            "enter row clickable"
+        );
+        assert!(
+            sys.mouse_maps.iter().any(|m| m.action == "escape"),
+            "escape row clickable"
+        );
+        assert!(
+            !sys.mouse_maps.iter().any(|m| m.action == "button_16"),
+            "no cell 16"
+        );
+    }
+
+    #[test]
+    fn renice_renders_pid_title_and_hints() {
+        // `reniceMenu` draw (:1811-1860): PID title, value entry, hints.
+        let mut sys = MenuSystem::default();
+        let mut s = store();
+        let mut cfg = Config::new();
+        let l = lists();
+        let c = MenuCtx {
+            term_w: 120,
+            term_h: 40,
+            target_pid: 7,
+            target_name: "p".to_string(),
+            mouse_pos: None,
+        };
+        let _ = open(&mut sys, Menus::Renice, -1, &c, &mut s, &mut cfg, &l);
+        assert!(sys.active);
+        sys.render_overlay(&s, &l, &btop_config::theme::default_theme(), 120, 40);
+        assert!(sys.overlay.contains("Renice PID 7"), "title");
+        assert!(sys.overlay.contains("Enter nice value:"), "entry");
+        assert!(sys.overlay.contains("To abort."), "hints");
     }
 
     #[test]
@@ -1117,6 +1218,7 @@ mod tests {
             term_h: 30,
             target_pid: 1,
             target_name: String::new(),
+            mouse_pos: None,
         };
         open(&mut sys, Menus::Main, -1, &small, &mut s, &mut cfg, &l);
         assert_eq!(sys.current, Some(Menus::SizeError));
@@ -1135,6 +1237,7 @@ mod tests {
             term_h: 30,
             target_pid: 1,
             target_name: String::new(),
+            mouse_pos: None,
         };
         open(&mut sys, Menus::Renice, -1, &tiny, &mut s, &mut cfg, &l);
         assert_eq!(sys.current, Some(Menus::SizeError));
@@ -1152,6 +1255,7 @@ mod tests {
             term_h: 24,
             target_pid: 1,
             target_name: String::new(),
+            mouse_pos: None,
         };
         open(&mut sys, Menus::Main, -1, &edge, &mut s, &mut cfg, &l);
         assert_eq!(sys.current, Some(Menus::Main));
@@ -1161,6 +1265,7 @@ mod tests {
             term_h: 20,
             target_pid: 1,
             target_name: String::new(),
+            mouse_pos: None,
         };
         open(&mut sys2, Menus::Renice, -1, &edge2, &mut s, &mut cfg, &l);
         assert_eq!(sys2.current, Some(Menus::Renice));
@@ -1296,6 +1401,7 @@ mod tests {
             term_h: 30,
             target_pid: 0,
             target_name: String::new(),
+            mouse_pos: None,
         };
         open(
             &mut sys,
@@ -1612,6 +1718,7 @@ mod tests {
             term_h: 30,
             target_pid: 0,
             target_name: String::new(),
+            mouse_pos: None,
         };
         open(&mut sys, Menus::Renice, -1, &dead, &mut s, &mut cfg, &l);
         let acts = proc(&mut sys, "enter", &dead, &mut s, &mut cfg, &l);
@@ -1631,6 +1738,33 @@ mod tests {
     }
 
     //? optionsMenu (input section over Task 4 primitives).
+
+    #[test]
+    fn options_click_selects_row_and_outside_closes() {
+        // :1417-1429: left-column click selects the row; outside closes.
+        let mut sys = MenuSystem::default();
+        let c = ctx();
+        let mut s = store();
+        let mut cfg = Config::new();
+        let l = lists();
+        open(&mut sys, Menus::Options, -1, &c, &mut s, &mut cfg, &l);
+        let (ox, oy, _) = crate::overlay::options_geometry(100, 30);
+        let click = |mx: i64, my: i64| MenuCtx {
+            term_w: 100,
+            term_h: 30,
+            target_pid: 0,
+            target_name: String::new(),
+            mouse_pos: Some((mx, my)),
+        };
+        // Row 1: my-oy-8 = 3 → ceil(3/2)-1 = 1.
+        let cc = click(ox + 5, oy + 11);
+        proc(&mut sys, "mouse_click", &cc, &mut s, &mut cfg, &l);
+        assert_eq!(sys.options.selected, 1);
+        // Corner (1,1) is outside any 120x40-centered box → Closed.
+        let cc = click(1, 1);
+        proc(&mut sys, "mouse_click", &cc, &mut s, &mut cfg, &l);
+        assert_eq!(sys.mask, 0);
+    }
 
     #[test]
     fn options_nav_tab_and_close() {
