@@ -100,6 +100,49 @@ options_click_case() {
 options_click_case
 if grep -qF "Color theme" "$OUT/options-click.txt"; then echo "FAIL: options outside-click close (menu still open)"; FAIL=$((FAIL+1));
 else echo "PASS: options outside-click close"; PASS=$((PASS+1)); fi
+# main-menu buttons: Options (button_0) is pre-selected so one click enters;
+# Help (button_1) needs select-then-confirm (C++ :1249 goto MainEntering).
+main_button_case() { # main_button_case <name> <col> <line> <clicks>
+  local home; home="$(mktemp -d /tmp/parity-key-XXXXXX)"
+  tmux new-session -d -s "$SESSION" -x 120 -y 40
+  tmux send-keys -t "$SESSION" "HOME=$home TERM=xterm-256color $BIN -u 500" Enter
+  sleep 3
+  tmux send-keys -t "$SESSION" m; sleep 2
+  local i; for i in $(seq 1 "$4"); do
+    tmux send-keys -t "$SESSION" $'\x1b[<0;'"$2"';'"$3"'M'; sleep 1
+    tmux send-keys -t "$SESSION" $'\x1b[<0;'"$2"';'"$3"'m'; sleep 2
+  done
+  tmux capture-pane -p -t "$SESSION" > "$OUT/$1.txt"
+  tmux kill-session -t "$SESSION" 2>/dev/null || true
+  rm -rf "$home"
+}
+main_button_case main-button-options 60 18 1
+check "main button options enters" "Color theme" "$OUT/main-button-options.txt"
+main_button_case main-button-help 60 21 2
+check "main button help enters" "Toggles main menu" "$OUT/main-button-help.txt"
+# proc wheel scroll: 8x down at (70,18) must move the viewport (top PIDs change).
+proc_scroll_case() {
+  local home; home="$(mktemp -d /tmp/parity-key-XXXXXX)"
+  tmux new-session -d -s "$SESSION" -x 120 -y 40
+  tmux send-keys -t "$SESSION" "HOME=$home TERM=xterm-256color $BIN -u 500" Enter
+  sleep 3
+  tmux capture-pane -p -t "$SESSION" > "$OUT/proc-scroll-before.txt"
+  local i; for i in $(seq 1 8); do
+    tmux send-keys -t "$SESSION" $'\x1b[<65;70;18M'; sleep 0.25
+  done
+  sleep 2
+  tmux capture-pane -p -t "$SESSION" > "$OUT/proc-scroll-after.txt"
+  tmux kill-session -t "$SESSION" 2>/dev/null || true
+  rm -rf "$home"
+}
+proc_scroll_case
+if python3 -c "
+import re,sys
+def top(f):
+    return re.findall(r'││\s*(\d+) ', open(f).read())[:4]
+sys.exit(0 if top('$OUT/proc-scroll-before.txt') != top('$OUT/proc-scroll-after.txt') else 1)"; then
+  echo "PASS: proc wheel scroll moves"; PASS=$((PASS+1));
+else echo "FAIL: proc wheel scroll moves (viewport static)"; FAIL=$((FAIL+1)); fi
 
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]

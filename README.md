@@ -255,9 +255,10 @@ Build it: `cargo build --release -p btop-app --locked --offline` (from `src-rust
 | CLI printers (`--help/--version/--default-config`, error lines) | ✅ `--help` byte-identical; `--default-config` 87 keys, zero diffs | `keys.sh` cli-* |
 | Menus + options (keyboard nav, help/signal/preset overlays) | ✅ keyboard parity | `keys.sh` help overlay |
 | Proc detail pane (Enter, elapsed/IO/status/parent) | ✅ live parity | `keys.sh` detail-enter |
-| Mouse row click/scroll + signal-send box | ✅ live parity | `keys.sh` mouse-click |
+| Mouse row click/scroll + signal-send box | ✅ live parity | `keys.sh` mouse-click, proc-scroll |
 | Mouse header zones (cpu/mem/net/proc buttons) | ✅ live parity | zone unit tests + click-`m` menu |
 | Mouse options clicks, SignalChoose/Renice overlays | ✅ live parity | `keys.sh` options-click, unit goldens |
+| Mouse main-menu buttons (select+confirm) | ✅ live parity | `keys.sh` main-button-options/help |
 | Header menu interactivity | ❌ deferred | — |
 | GPU panels | ❌ deferred | — |
 | Theme-file loading (compiled-in Default only) | ❌ deferred | — |
