@@ -254,8 +254,10 @@ Build it: `cargo build --release -p btop-app --locked --offline` (from `src-rust
 | Header clock (`%X`, per-second, centered) | ✅ live parity | `keys.sh` header clock |
 | CLI printers (`--help/--version/--default-config`, error lines) | ✅ `--help` byte-identical; `--default-config` 87 keys, zero diffs | `keys.sh` cli-* |
 | Menus + options (keyboard nav, help/signal/preset overlays) | ✅ keyboard parity | `keys.sh` help overlay |
-| Proc detail pane | 🟡 unit-tested only | draw/runner goldens |
-| Mouse (click/scroll/buttons) | 🟡 decode + hit-maps done, dispatch pending | `btop-input` unit tests |
+| Proc detail pane (Enter, elapsed/IO/status/parent) | ✅ live parity | `keys.sh` detail-enter |
+| Mouse row click/scroll + signal-send box | ✅ live parity | `keys.sh` mouse-click |
+| Mouse header zones (cpu/mem/net/proc buttons) | ✅ live parity | zone unit tests + click-`m` menu |
+| Mouse options clicks, SignalChoose/Renice overlays | ✅ live parity | `keys.sh` options-click, unit goldens |
 | Header menu interactivity | ❌ deferred | — |
 | GPU panels | ❌ deferred | — |
 | Theme-file loading (compiled-in Default only) | ❌ deferred | — |

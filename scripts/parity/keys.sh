@@ -82,6 +82,24 @@ mouse_click_case() {
 }
 mouse_click_case
 check "mouse click selects" "Send signal:" "$OUT/mouse-click.txt"
+# options outside-click (1,1) closes the menu back to boxes.
+run_case options-close "" o
+check "options opens" "Color theme" "$OUT/options-close.txt"
+options_click_case() {
+  local home; home="$(mktemp -d /tmp/parity-key-XXXXXX)"
+  tmux new-session -d -s "$SESSION" -x 120 -y 40
+  tmux send-keys -t "$SESSION" "HOME=$home TERM=xterm-256color $BIN -u 500" Enter
+  sleep 3
+  tmux send-keys -t "$SESSION" o; sleep 2
+  tmux send-keys -t "$SESSION" $'\x1b[<0;1;1M'; sleep 1
+  tmux send-keys -t "$SESSION" $'\x1b[<0;1;1m'; sleep 2
+  tmux capture-pane -p -t "$SESSION" > "$OUT/options-click.txt"
+  tmux kill-session -t "$SESSION" 2>/dev/null || true
+  rm -rf "$home"
+}
+options_click_case
+if grep -qF "Color theme" "$OUT/options-click.txt"; then echo "FAIL: options outside-click close (menu still open)"; FAIL=$((FAIL+1));
+else echo "PASS: options outside-click close"; PASS=$((PASS+1)); fi
 
 echo "== $PASS passed, $FAIL failed =="
 [ "$FAIL" -eq 0 ]
